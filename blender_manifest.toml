@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "varwin_vwo_exporter"
+version = "1.1.0"
+name = "Varwin VWO & Scene Exporter"
+tagline = "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwt) в Varwin XRMS"
+maintainer = "B10Sreg"
+type = "add-on"
+
+website = "https://varwin.com"
+tags = ["Import-Export", "3D View"]
+
+blender_version_min = "4.0.0"
+license = [
+    "SPDX:GPL-3.0-or-later",
+]

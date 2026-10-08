@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+Thumbs.db
+*.blend1
+*.blend2
+Exported_VWO/
+Exported_VWT/
+dist/
+build/
+*.zip
