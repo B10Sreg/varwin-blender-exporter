@@ -883,14 +883,10 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 if gname in ('Base', 'BaseCollision', 'TeleportArea'):
                     base_go_pids.add(o.path_id)
                 if gname == 'Base':
-                    tree['m_Tag'] = 0      # Tag 0 (Untagged) - physical collision for walls/location
+                    tree['m_Tag'] = 20000  # Tag 20000 ('TeleportArea') - essential for Varwin teleport raycast
                     tree['m_Layer'] = 10   # Layer 10 (Location)
                     o.save_typetree(tree)
-                elif gname == 'TeleportArea':
-                    tree['m_Tag'] = 0      # Tag 0 (Untagged)
-                    tree['m_Layer'] = 0    # Layer 0 (Default)
-                    o.save_typetree(tree)
-                elif gname == 'BaseCollision':
+                elif gname in ('BaseCollision', 'TeleportArea'):
                     tree['m_Tag'] = 20000  # Tag 20000 ('TeleportArea') - dedicated walkable teleport floor
                     tree['m_Layer'] = 0    # Layer 0 (Default)
                     o.save_typetree(tree)
