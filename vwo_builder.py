@@ -971,9 +971,15 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 # Mode 3: Flat Ambient Color (Directly evaluated in Forward Pixel Shader, prevents pitch-black surfaces!)
                 tree['m_AmbientMode'] = 3
                 tree['m_AmbientIntensity'] = 1.0
-                amb_r = max(0.65, min(1.0, float(sun_color[0]) * 0.95))
-                amb_g = max(0.60, min(1.0, float(sun_color[1]) * 0.90))
-                amb_b = max(0.48, min(1.0, float(sun_color[2]) * 0.78))
+                if sun_obj:
+                    amb_r = max(0.45, min(0.85, float(sun_color[0]) * 0.75))
+                    amb_g = max(0.40, min(0.80, float(sun_color[1]) * 0.70))
+                    amb_b = max(0.35, min(0.75, float(sun_color[2]) * 0.65))
+                else:
+                    # Indoor scene with point lights: subtle ambient to avoid pitch black, but allow point light contrast
+                    amb_r = 0.22
+                    amb_g = 0.20
+                    amb_b = 0.16
                 tree['m_AmbientSkyColor'] = {
                     'r': amb_r,
                     'g': amb_g,

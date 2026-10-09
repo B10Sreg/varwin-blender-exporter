@@ -413,7 +413,14 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
                     u = float(uv_data[loop_idx].uv[0])
                     v_coord = float(uv_data[loop_idx].uv[1])
                 else:
-                    u, v_coord = 0.0, 0.0
+                    # Planar UV mapping based on normal orientation (Unity coords: Y is up)
+                    abs_nx, abs_ny, abs_nz = abs(nx), abs(ny), abs(nz)
+                    if abs_ny >= abs_nx and abs_ny >= abs_nz:
+                        u, v_coord = px * 0.5, pz * 0.5
+                    elif abs_nx >= abs_ny and abs_nx >= abs_nz:
+                        u, v_coord = pz * 0.5, py * 0.5
+                    else:
+                        u, v_coord = px * 0.5, py * 0.5
 
                 tri_verts.append((px, py, pz, nx, ny, nz, u, v_coord))
 
