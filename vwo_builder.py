@@ -257,6 +257,18 @@ def build_vwo_package(obj, props, output_filepath: str):
                         c[1]['b'] = float(ecol[2])
                         c[1]['a'] = 1.0
 
+                is_emissive = max(ecol[0], ecol[1], ecol[2]) > 0.01
+                if is_emissive:
+                    if 'm_ValidKeywords' in tree:
+                        tree['m_ValidKeywords'] = ['_EMISSION']
+                    if 'm_ShaderKeywords' in tree:
+                        tree['m_ShaderKeywords'] = '_EMISSION'
+                else:
+                    if 'm_ValidKeywords' in tree:
+                        tree['m_ValidKeywords'] = []
+                    if 'm_ShaderKeywords' in tree:
+                        tree['m_ShaderKeywords'] = ''
+
                 # Unity Standard Shader renders pitch black if metallic == 1.0 without baked reflection cubemap.
                 # Clamp metallic to 0.80 to keep specular sheen while preserving diffuse lighting!
                 met = min(float(m_info.get('metallic', 0.0)), 0.80)
@@ -526,6 +538,37 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
     selected_only = getattr(scene_props, 'selected_only', False)
     mesh_info = extract_scene_geometry(scene, selected_only=selected_only)
 
+    # 1.1. Extract Point Lights from scene
+    scene_point_lights = []
+    for obj in scene.objects:
+        if obj.type == 'LIGHT' and obj.data and obj.data.type == 'POINT' and not obj.hide_get():
+            loc = obj.matrix_world.translation if hasattr(obj, 'matrix_world') else obj.location
+            # Convert Blender coords (X, Y, Z) to Unity coords (X, Z, Y)
+            ux = float(loc.x)
+            uy = float(loc.z)
+            uz = float(loc.y)
+            col = tuple(float(c) for c in obj.data.color[:3])
+            energy = float(getattr(obj.data, 'energy', 10.0))
+            intensity = min(6.0, max(0.5, energy / 12.0))
+            cutoff = getattr(obj.data, 'cutoff_distance', 0.0)
+            range_val = float(cutoff) if cutoff > 0.5 else 9.0
+            scene_point_lights.append({
+                'name': obj.name,
+                'pos': (ux, uy, uz),
+                'color': col,
+                'intensity': intensity,
+                'range': range_val
+            })
+
+    # 1.2. Extract Sun Light if present in scene
+    sun_obj = next((o for o in scene.objects if o.type == 'LIGHT' and o.data and o.data.type == 'SUN' and not o.hide_get()), None)
+    if sun_obj:
+        sun_color = tuple(float(c) for c in sun_obj.data.color[:3])
+        sun_intensity = float(getattr(sun_obj.data, 'energy', 1.0))
+    else:
+        sun_color = tuple(float(c) for c in getattr(scene_props, 'light_color', (1.0, 0.95, 0.85))[:3])
+        sun_intensity = float(getattr(scene_props, 'light_intensity', 1.0))
+
     # 2. Read template contents
     template_files = {}
     with zipfile.ZipFile(template_path, 'r') as ztpl:
@@ -564,6 +607,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
         'Base', 'BaseCollision', 'TeleportArea', 'Directional Light_BAKED',
         'Directional Light', 'Lighting', 'Main Camera'
     }
+    for pl in scene_point_lights:
+        keep_names.add(pl['name'])
 
     for bname in ['bundle', 'linux_bundle', 'android_bundle']:
         if bname not in template_files:
@@ -599,6 +644,10 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 tree = m_obj.read_typetree()
                 tree['m_Name'] = m_info.get('name', f'SceneMaterial_{i}')
                 col = m_info.get('color', (0.8, 0.8, 0.8, 1.0))
+                ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
+                is_emissive = max(ecol[0], ecol[1], ecol[2]) > 0.01
+
+                has_em_prop = False
                 for c in tree.get('m_SavedProperties', {}).get('m_Colors', []):
                     if c[0] == '_Color':
                         c[1]['r'] = float(col[0])
@@ -606,11 +655,29 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                         c[1]['b'] = float(col[2])
                         c[1]['a'] = float(col[3]) if len(col) > 3 else 1.0
                     elif c[0] == '_EmissionColor':
-                        ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
+                        has_em_prop = True
                         c[1]['r'] = float(ecol[0])
                         c[1]['g'] = float(ecol[1])
                         c[1]['b'] = float(ecol[2])
                         c[1]['a'] = 1.0
+
+                if not has_em_prop and 'm_SavedProperties' in tree and 'm_Colors' in tree['m_SavedProperties']:
+                    tree['m_SavedProperties']['m_Colors'].append((
+                        '_EmissionColor',
+                        {'r': float(ecol[0]), 'g': float(ecol[1]), 'b': float(ecol[2]), 'a': 1.0}
+                    ))
+
+                if is_emissive:
+                    if 'm_ValidKeywords' in tree:
+                        tree['m_ValidKeywords'] = ['_EMISSION']
+                    if 'm_ShaderKeywords' in tree:
+                        tree['m_ShaderKeywords'] = '_EMISSION'
+                    tree['m_LightmapFlags'] = 2
+                else:
+                    if 'm_ValidKeywords' in tree:
+                        tree['m_ValidKeywords'] = []
+                    if 'm_ShaderKeywords' in tree:
+                        tree['m_ShaderKeywords'] = ''
 
                 # Clamp metallic to 0.80 to prevent black rendering without cubemap
                 met = min(float(m_info.get('metallic', 0.0)), 0.80)
@@ -622,6 +689,83 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 ]
                 m_obj.save_typetree(tree)
                 vwt_mat_pids.append(m_pid)
+
+        # 4.1b. Inject Point Lights into BuildPlayer-VarwinSampleScene
+        scene_sf = None
+        for bf in env.files.values():
+            if hasattr(bf, 'files'):
+                for sf_name, sf in bf.files.items():
+                    if sf_name == 'BuildPlayer-VarwinSampleScene':
+                        scene_sf = sf
+                        break
+            if scene_sf:
+                break
+
+        if scene_sf and 12 in scene_sf.objects and 80 in scene_sf.objects and 219 in scene_sf.objects:
+            go_tpl = scene_sf.objects[12]
+            tf_tpl = scene_sf.objects[80]
+            lt_tpl = scene_sf.objects[219]
+
+            for idx, pl in enumerate(scene_point_lights):
+                go_pid = 7000 + idx * 3
+                tf_pid = 7001 + idx * 3
+                lt_pid = 7002 + idx * 3
+
+                # Clone GameObject
+                new_go = copy.copy(go_tpl)
+                new_go.path_id = go_pid
+                scene_sf.objects[go_pid] = new_go
+                gtree = new_go.read_typetree()
+                gtree['m_Name'] = pl['name']
+                gtree['m_IsActive'] = True
+                gtree['m_Layer'] = 0
+                gtree['m_Tag'] = 0
+                gtree['m_Component'] = [
+                    {'component': {'m_FileID': 0, 'm_PathID': tf_pid}},
+                    {'component': {'m_FileID': 0, 'm_PathID': lt_pid}}
+                ]
+                new_go.save_typetree(gtree)
+
+                # Clone Transform
+                new_tf = copy.copy(tf_tpl)
+                new_tf.path_id = tf_pid
+                scene_sf.objects[tf_pid] = new_tf
+                ttree = new_tf.read_typetree()
+                ttree['m_GameObject'] = {'m_FileID': 0, 'm_PathID': go_pid}
+                ttree['m_LocalPosition'] = {
+                    'x': float(pl['pos'][0]),
+                    'y': float(pl['pos'][1]),
+                    'z': float(pl['pos'][2])
+                }
+                ttree['m_LocalRotation'] = {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}
+                ttree['m_LocalScale'] = {'x': 1.0, 'y': 1.0, 'z': 1.0}
+                ttree['m_Father'] = {'m_FileID': 0, 'm_PathID': 0}
+                ttree['m_Children'] = []
+                new_tf.save_typetree(ttree)
+
+                # Clone Light
+                new_lt = copy.copy(lt_tpl)
+                new_lt.path_id = lt_pid
+                scene_sf.objects[lt_pid] = new_lt
+                ltree = new_lt.read_typetree()
+                ltree['m_GameObject'] = {'m_FileID': 0, 'm_PathID': go_pid}
+                ltree['m_Enabled'] = True
+                ltree['m_Type'] = 2  # Point Light
+                ltree['m_Intensity'] = float(pl['intensity'])
+                ltree['m_Range'] = float(pl['range'])
+                ltree['m_Color'] = {
+                    'r': float(pl['color'][0]),
+                    'g': float(pl['color'][1]),
+                    'b': float(pl['color'][2]),
+                    'a': 1.0
+                }
+                ltree['m_Lightmapping'] = 4  # Realtime
+                if 'm_BakingOutput' in ltree:
+                    ltree['m_BakingOutput']['isBaked'] = False
+                    ltree['m_BakingOutput']['lightmapBakeType'] = 4
+                if 'm_Shadows' in ltree:
+                    ltree['m_Shadows']['m_Type'] = 0  # Disable shadows for Point Lights for Quest 2 90 FPS performance
+                new_lt.save_typetree(ltree)
 
         # 4.2. Patch environment geometry meshes
         for o in env.objects:
@@ -759,12 +903,11 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 o.save_typetree(tree)
             elif o.type.name == 'Light' and (o.path_id == light_pid or o.path_id in (14, 219)):
                 tree = o.read_typetree()
-                tree['m_Intensity'] = float(getattr(scene_props, 'light_intensity', 1.0))
-                lcol = getattr(scene_props, 'light_color', (1.0, 0.95, 0.85))
+                tree['m_Intensity'] = float(sun_intensity)
                 tree['m_Color'] = {
-                    'r': float(lcol[0]),
-                    'g': float(lcol[1]),
-                    'b': float(lcol[2]),
+                    'r': float(sun_color[0]),
+                    'g': float(sun_color[1]),
+                    'b': float(sun_color[2]),
                     'a': 1.0
                 }
                 tree['m_Lightmapping'] = 4
@@ -782,23 +925,22 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 # Enable Gradient Ambient Mode (1: Trilight) so interiors are evenly and richly lit
                 tree['m_AmbientMode'] = 1
                 tree['m_AmbientIntensity'] = 1.0
-                lcol = getattr(scene_props, 'light_color', (1.0, 0.95, 0.82))
                 tree['m_AmbientSkyColor'] = {
-                    'r': min(1.0, float(lcol[0]) * 0.95),
-                    'g': min(1.0, float(lcol[1]) * 0.90),
-                    'b': min(1.0, float(lcol[2]) * 0.78),
+                    'r': min(1.0, float(sun_color[0]) * 0.95),
+                    'g': min(1.0, float(sun_color[1]) * 0.90),
+                    'b': min(1.0, float(sun_color[2]) * 0.78),
                     'a': 1.0
                 }
                 tree['m_AmbientEquatorColor'] = {
-                    'r': min(1.0, float(lcol[0]) * 0.80),
-                    'g': min(1.0, float(lcol[1]) * 0.76),
-                    'b': min(1.0, float(lcol[2]) * 0.65),
+                    'r': min(1.0, float(sun_color[0]) * 0.80),
+                    'g': min(1.0, float(sun_color[1]) * 0.76),
+                    'b': min(1.0, float(sun_color[2]) * 0.65),
                     'a': 1.0
                 }
                 tree['m_AmbientGroundColor'] = {
-                    'r': min(1.0, float(lcol[0]) * 0.50),
-                    'g': min(1.0, float(lcol[1]) * 0.46),
-                    'b': min(1.0, float(lcol[2]) * 0.38),
+                    'r': min(1.0, float(sun_color[0]) * 0.50),
+                    'g': min(1.0, float(sun_color[1]) * 0.46),
+                    'b': min(1.0, float(sun_color[2]) * 0.38),
                     'a': 1.0
                 }
                 tree['m_ReflectionIntensity'] = 1.0
@@ -869,7 +1011,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
         'root_guid': new_root_guid,
         'vertices': mesh_info['vertex_count'],
         'triangles': mesh_info['triangle_count'],
-        'objects_merged': mesh_info['objects_merged']
+        'objects_merged': mesh_info['objects_merged'],
+        'point_lights_injected': len(scene_point_lights)
     }
 
     # 10. Optional 1-Click Install to local Varwin XRMS
