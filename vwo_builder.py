@@ -548,10 +548,10 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
             uy = float(loc.z)
             uz = float(loc.y)
             col = tuple(float(c) for c in obj.data.color[:3])
-            energy = float(getattr(obj.data, 'energy', 10.0))
-            intensity = min(6.0, max(0.5, energy / 12.0))
+            energy = float(getattr(obj.data, 'energy', 25.0))
+            intensity = min(6.0, max(1.5, energy / 12.0 if energy > 12.0 else 2.5))
             cutoff = getattr(obj.data, 'cutoff_distance', 0.0)
-            range_val = float(cutoff) if cutoff > 0.5 else 9.0
+            range_val = float(cutoff) if cutoff > 0.5 else 16.0
             scene_point_lights.append({
                 'name': obj.name,
                 'pos': (ux, uy, uz),
@@ -904,7 +904,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 o.save_typetree(tree)
             elif o.type.name == 'Light' and (o.path_id == light_pid or o.path_id in (14, 219)):
                 tree = o.read_typetree()
-                tree['m_Intensity'] = float(sun_intensity)
+                # Soft directional fill so it doesn't wash out point lights or create harsh shadow voids
+                tree['m_Intensity'] = min(float(sun_intensity), 0.50)
                 tree['m_Color'] = {
                     'r': float(sun_color[0]),
                     'g': float(sun_color[1]),
@@ -916,35 +917,32 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     tree['m_BakingOutput']['isBaked'] = False
                     tree['m_BakingOutput']['lightmapBakeType'] = 4
 
-                # Disable shadows on Directional Light if NONE (recommended for interiors so ceilings do not occlude)
-                shadow_mode = getattr(scene_props, 'light_shadows', 'NONE')
+                # Disable directional shadows so ceiling geometry doesn't cast black shadows over interior
                 if 'm_Shadows' in tree:
-                    tree['m_Shadows']['m_Type'] = 2 if shadow_mode == 'SOFT' else 0
+                    tree['m_Shadows']['m_Type'] = 0
                 o.save_typetree(tree)
             elif o.type.name == 'RenderSettings':
                 tree = o.read_typetree()
-                # Enable Gradient Ambient Mode (1: Trilight) so interiors are evenly and richly lit
-                tree['m_AmbientMode'] = 1
+                # Mode 3: Flat Ambient Color (Directly evaluated in Forward Pixel Shader, prevents pitch-black surfaces!)
+                tree['m_AmbientMode'] = 3
                 tree['m_AmbientIntensity'] = 1.0
+                amb_r = max(0.65, min(1.0, float(sun_color[0]) * 0.95))
+                amb_g = max(0.60, min(1.0, float(sun_color[1]) * 0.90))
+                amb_b = max(0.48, min(1.0, float(sun_color[2]) * 0.78))
                 tree['m_AmbientSkyColor'] = {
-                    'r': min(1.0, float(sun_color[0]) * 0.95),
-                    'g': min(1.0, float(sun_color[1]) * 0.90),
-                    'b': min(1.0, float(sun_color[2]) * 0.78),
+                    'r': amb_r,
+                    'g': amb_g,
+                    'b': amb_b,
                     'a': 1.0
                 }
-                tree['m_AmbientEquatorColor'] = {
-                    'r': min(1.0, float(sun_color[0]) * 0.80),
-                    'g': min(1.0, float(sun_color[1]) * 0.76),
-                    'b': min(1.0, float(sun_color[2]) * 0.65),
-                    'a': 1.0
-                }
+                tree['m_AmbientEquatorColor'] = tree['m_AmbientSkyColor']
                 tree['m_AmbientGroundColor'] = {
-                    'r': min(1.0, float(sun_color[0]) * 0.50),
-                    'g': min(1.0, float(sun_color[1]) * 0.46),
-                    'b': min(1.0, float(sun_color[2]) * 0.38),
+                    'r': amb_r * 0.85,
+                    'g': amb_g * 0.85,
+                    'b': amb_b * 0.85,
                     'a': 1.0
                 }
-                tree['m_ReflectionIntensity'] = 1.0
+                tree['m_ReflectionIntensity'] = 0.5
                 o.save_typetree(tree)
 
         out_buf = io.BytesIO()

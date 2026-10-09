@@ -74,8 +74,6 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
     # Triangulate via bmesh
     bm = bmesh.new()
     bm.from_mesh(mesh)
-    # Recalculate face normals outside to avoid inverted surfaces
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     bmesh.ops.triangulate(bm, faces=bm.faces[:])
     bm.to_mesh(mesh)
     bm.free()
@@ -285,7 +283,6 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
         # Triangulate
         bm = bmesh.new()
         bm.from_mesh(mesh)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
         bmesh.ops.triangulate(bm, faces=bm.faces[:])
         bm.to_mesh(mesh)
         bm.free()
