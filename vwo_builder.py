@@ -675,7 +675,7 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     }
                     o.save_typetree(tree)
 
-        # 4.3. Update MeshRenderer on Base
+        # 4.3. Update MeshRenderer on Base and clear baked lightmap indices
         for o in env.objects:
             if o.type.name == 'MeshRenderer':
                 tree = o.read_typetree()
@@ -683,6 +683,18 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     tree['m_Materials'] = [{'m_FileID': 1, 'm_PathID': pid} for pid in vwt_mat_pids]
                 else:
                     tree['m_Materials'] = [{'m_FileID': 1, 'm_PathID': 25}]
+                # Disable baked lightmap so Unity renders pure realtime & ambient lighting on the new mesh
+                tree['m_LightmapIndex'] = 65535
+                tree['m_LightmapIndexDynamic'] = 65535
+                tree['m_LightmapTilingOffset'] = {'x': 1.0, 'y': 1.0, 'z': 0.0, 'w': 0.0}
+                tree['m_LightmapTilingOffsetDynamic'] = {'x': 1.0, 'y': 1.0, 'z': 0.0, 'w': 0.0}
+                o.save_typetree(tree)
+            elif o.type.name == 'LightmapSettings':
+                tree = o.read_typetree()
+                tree['m_Lightmaps'] = []
+                if 'm_GISettings' in tree:
+                    tree['m_GISettings']['m_EnableBakedLightmaps'] = False
+                    tree['m_GISettings']['m_EnableRealtimeLightmaps'] = False
                 o.save_typetree(tree)
 
         # 4.4. Reset Transform on Base, TeleportArea, and BaseCollision to remove -90 tilt and 180 deg rotation

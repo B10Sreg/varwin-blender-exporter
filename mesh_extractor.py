@@ -32,10 +32,16 @@ def extract_material_properties(mat):
                     metallic = float(node.inputs['Metallic'].default_value)
                 if 'Roughness' in node.inputs:
                     roughness = float(node.inputs['Roughness'].default_value)
-                if 'Emission Color' in node.inputs:
-                    emission = tuple(float(c) for c in node.inputs['Emission Color'].default_value[:4])
-                elif 'Emission' in node.inputs:
-                    emission = tuple(float(c) for c in node.inputs['Emission'].default_value[:4])
+                if 'Emission Color' in node.inputs or 'Emission' in node.inputs:
+                    em_input = node.inputs.get('Emission Color', node.inputs.get('Emission'))
+                    raw_em = tuple(float(c) for c in em_input.default_value[:4])
+                    em_strength = 1.0
+                    if 'Emission Strength' in node.inputs:
+                        em_strength = float(node.inputs['Emission Strength'].default_value)
+                    if em_strength > 0.0:
+                        emission = (raw_em[0] * em_strength, raw_em[1] * em_strength, raw_em[2] * em_strength, 1.0)
+                    else:
+                        emission = (0.0, 0.0, 0.0, 1.0)
                 break
     else:
         base_color = tuple(float(c) for c in mat.diffuse_color[:4])
@@ -68,6 +74,8 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
     # Triangulate via bmesh
     bm = bmesh.new()
     bm.from_mesh(mesh)
+    # Recalculate face normals outside to avoid inverted surfaces
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     bmesh.ops.triangulate(bm, faces=bm.faces[:])
     bm.to_mesh(mesh)
     bm.free()
@@ -277,6 +285,7 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
         # Triangulate
         bm = bmesh.new()
         bm.from_mesh(mesh)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
         bmesh.ops.triangulate(bm, faces=bm.faces[:])
         bm.to_mesh(mesh)
         bm.free()
