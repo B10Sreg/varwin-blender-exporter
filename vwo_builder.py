@@ -849,7 +849,11 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 gname = tree.get('m_Name')
                 if gname in ('Base', 'BaseCollision', 'TeleportArea'):
                     base_go_pids.add(o.path_id)
-                if gname in ('BaseCollision', 'TeleportArea'):
+                if gname == 'Base':
+                    tree['m_Tag'] = 20000  # Tag with 'TeleportArea'
+                    tree['m_Layer'] = 10   # Layer 10 (Location)
+                    o.save_typetree(tree)
+                elif gname in ('BaseCollision', 'TeleportArea'):
                     tree['m_Tag'] = 20000  # Tag with 'TeleportArea'
                     tree['m_Layer'] = 0    # Layer 0 (Default)
                     o.save_typetree(tree)
@@ -866,11 +870,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
             elif o.type.name == 'MeshCollider':
                 tree = o.read_typetree()
                 go_ref = tree.get('m_GameObject', {}).get('m_PathID')
-                # Disable MeshCollider on Base (visual mesh) so BaseCollision under TeleportArea is the sole physical & teleport collider
-                if o.path_id == 207 or go_ref == 49:
-                    tree['m_Enabled'] = False
-                    o.save_typetree(tree)
-                elif o.path_id == 210 or go_ref == 64:
+                # Enable MeshCollider on BOTH Base (Layer 10 Location) and BaseCollision (Layer 0 TeleportArea)
+                if o.path_id in (207, 210) or go_ref in (49, 64):
                     tree['m_Enabled'] = True
                     tree['m_IsTrigger'] = False
                     tree['m_Convex'] = False
