@@ -250,10 +250,80 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
     }
 
 
+def _pack_triangles(triangles_list):
+    """
+    Packs a list of triangles [ (v0, v1, v2), ... ] where each v is (px, py, pz, nx, ny, nz, u, v)
+    into vertex and index buffers matching Unity 48-byte layout.
+    """
+    v_data = []
+    v_map = {}
+    indices = []
+    min_x, max_x = float('inf'), float('-inf')
+    min_y, max_y = float('inf'), float('-inf')
+    min_z, max_z = float('inf'), float('-inf')
+
+    for tri in triangles_list:
+        for vert in tri:
+            px, py, pz, nx, ny, nz, u, v_coord = vert
+            min_x = min(min_x, px)
+            max_x = max(max_x, px)
+            min_y = min(min_y, py)
+            max_y = max(max_y, py)
+            min_z = min(min_z, pz)
+            max_z = max(max_z, pz)
+            key = (round(px, 5), round(py, 5), round(pz, 5), round(nx, 4), round(ny, 4), round(nz, 4))
+            if key not in v_map:
+                idx = len(v_data)
+                v_map[key] = idx
+                v_data.append(struct.pack('<3f3f4f2f', px, py, pz, nx, ny, nz, 1.0, 0.0, 0.0, 1.0, u, v_coord))
+                indices.append(idx)
+            else:
+                indices.append(v_map[key])
+
+    if not v_data:
+        min_x = max_x = min_y = max_y = min_z = max_z = 0.0
+
+    cx = (min_x + max_x) * 0.5
+    cy = (min_y + max_y) * 0.5
+    cz = (min_z + max_z) * 0.5
+    ex = max(0.001, (max_x - min_x) * 0.5)
+    ey = max(0.001, (max_y - min_y) * 0.5)
+    ez = max(0.001, (max_z - min_z) * 0.5)
+
+    use_32bit = len(v_data) > 65535
+    fmt_char = 'I' if use_32bit else 'H'
+    raw_ib = struct.pack(f'<{len(indices)}{fmt_char}', *indices)
+
+    return {
+        'vertex_count': len(v_data),
+        'triangle_count': len(indices) // 3,
+        'raw_vertex_data': b''.join(v_data),
+        'raw_index_buffer': raw_ib,
+        'index_format': 1 if use_32bit else 0,
+        'index_count': len(indices),
+        'submeshes': [{
+            'firstByte': 0,
+            'indexCount': len(indices),
+            'topology': 0,
+            'baseVertex': 0,
+            'firstVertex': 0,
+            'vertexCount': len(v_data),
+            'localAABB': {
+                'm_Center': {'x': cx, 'y': cy, 'z': cz},
+                'm_Extent': {'x': ex, 'y': ey, 'z': ez}
+            }
+        }],
+        'aabb_center': {'x': cx, 'y': cy, 'z': cz},
+        'aabb_extent': {'x': ex, 'y': ey, 'z': ez}
+    }
+
+
 def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: bool = True):
     """
     Extracts and merges visible meshes from the Blender scene in world space,
     preserving materials and creating per-material submeshes for Scene Template (.vwt).
+    Also generates dedicated floor_mesh (for TeleportArea BaseCollision) and
+    collision_mesh (for Base MeshCollider, omitting ceilings).
     """
     if selected_only and bpy.context and bpy.context.selected_objects:
         mesh_objs = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()]
@@ -275,6 +345,10 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
     # Collect materials across all scene meshes
     material_map = {}  # mat_name -> (index, mat_props, [tri_indices], [s_min, s_max])
     ordered_materials = []
+
+    floor_triangles = []
+    collision_triangles = []
+    all_triangles = []
 
     for obj in mesh_objs:
         eval_obj = obj.evaluated_get(depsgraph) if apply_modifiers else obj
@@ -317,6 +391,7 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
                 ordered_materials.append(mat_key)
 
             entry = material_map[mat_key]
+            tri_verts = []
 
             for loop_idx in (tri.loops[0], tri.loops[2], tri.loops[1]):
                 loop = mesh.loops[loop_idx]
@@ -339,6 +414,8 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
                     v_coord = float(uv_data[loop_idx].uv[1])
                 else:
                     u, v_coord = 0.0, 0.0
+
+                tri_verts.append((px, py, pz, nx, ny, nz, u, v_coord))
 
                 min_x = min(min_x, px)
                 max_x = max(max_x, px)
@@ -375,6 +452,21 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
                     entry['indices'].append(new_idx)
                 else:
                     entry['indices'].append(vert_map[key])
+
+            # Classify triangle
+            avg_ny = (tri_verts[0][4] + tri_verts[1][4] + tri_verts[2][4]) / 3.0
+            avg_py = (tri_verts[0][1] + tri_verts[1][1] + tri_verts[2][1]) / 3.0
+
+            # 1. Walkable floor (normal up, near floor level)
+            if avg_ny > 0.6 and avg_py <= 0.35:
+                floor_triangles.append(tri_verts)
+
+            # 2. Collision (walls, pillars, floors - exclude ceiling above 1.8m facing down or high geometry)
+            is_ceiling = (avg_ny < -0.5 and avg_py > 1.8) or (avg_py > 2.65 and avg_ny < -0.2)
+            if not is_ceiling:
+                collision_triangles.append(tri_verts)
+
+            all_triangles.append(tri_verts)
 
         if apply_modifiers:
             eval_obj.to_mesh_clear()
@@ -434,6 +526,18 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
 
     total_index_count = sum(len(material_map[k]['indices']) for k in ordered_materials)
 
+    # Fallbacks if floor or collision filters were too strict
+    if not floor_triangles:
+        floor_triangles = [t for t in all_triangles if (t[0][4] + t[1][4] + t[2][4]) / 3.0 > 0.5]
+    if not floor_triangles:
+        floor_triangles = all_triangles
+
+    if not collision_triangles:
+        collision_triangles = all_triangles
+
+    floor_mesh_dict = _pack_triangles(floor_triangles)
+    collision_mesh_dict = _pack_triangles(collision_triangles)
+
     return {
         'vertex_count': len(vertices_data),
         'triangle_count': total_index_count // 3,
@@ -447,5 +551,7 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
         'aabb_extent': {'x': ex, 'y': ey, 'z': ez},
         'dimensions': {'x': ex * 2.0, 'y': ey * 2.0, 'z': ez * 2.0},
         'radius': (ex**2 + ey**2 + ez**2)**0.5,
-        'objects_merged': len(mesh_objs)
+        'objects_merged': len(mesh_objs),
+        'floor_mesh': floor_mesh_dict,
+        'collision_mesh': collision_mesh_dict
     }

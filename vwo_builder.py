@@ -610,6 +610,9 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
     for pl in scene_point_lights:
         keep_names.add(pl['name'])
 
+    floor_mesh = mesh_info.get('floor_mesh', mesh_info)
+    collision_mesh = mesh_info.get('collision_mesh', mesh_info)
+
     for bname in ['bundle', 'linux_bundle', 'android_bundle']:
         if bname not in template_files:
             continue
@@ -767,6 +770,36 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     ltree['m_Shadows']['m_Type'] = 0  # Disable shadows for Point Lights for Quest 2 90 FPS performance
                 new_lt.save_typetree(ltree)
 
+        # 4.1c. Clone Mesh 31 to Mesh 32 for dedicated physical wall/floor collisions (excluding ceilings)
+        if shared_sf and 31 in shared_sf.objects:
+            mesh32 = copy.copy(shared_sf.objects[31])
+            mesh32.path_id = 32
+            shared_sf.objects[32] = mesh32
+            m32_tree = mesh32.read_typetree()
+            m32_tree['m_Name'] = 'BaseWallCollision'
+            m32_tree['m_VertexData']['m_VertexCount'] = collision_mesh['vertex_count']
+            m32_tree['m_VertexData']['m_DataSize'] = collision_mesh['raw_vertex_data']
+            m32_tree['m_VertexData']['m_Channels'] = UNITY_48B_CHANNELS
+            m32_tree['m_IndexBuffer'] = collision_mesh['raw_index_buffer']
+            m32_tree['m_IndexFormat'] = collision_mesh['index_format']
+            m32_tree['m_SubMeshes'] = collision_mesh.get('submeshes', [{
+                'firstByte': 0,
+                'indexCount': collision_mesh['index_count'],
+                'topology': 0,
+                'baseVertex': 0,
+                'firstVertex': 0,
+                'vertexCount': collision_mesh['vertex_count'],
+                'localAABB': {
+                    'm_Center': collision_mesh['aabb_center'],
+                    'm_Extent': collision_mesh['aabb_extent']
+                }
+            }])
+            m32_tree['m_LocalAABB'] = {
+                'm_Center': collision_mesh['aabb_center'],
+                'm_Extent': collision_mesh['aabb_extent']
+            }
+            mesh32.save_typetree(m32_tree)
+
         # 4.2. Patch environment geometry meshes
         for o in env.objects:
             if o.type.name == 'Mesh':
@@ -796,26 +829,26 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     }
                     o.save_typetree(tree)
                 elif m_name == 'BaseCollision':
-                    tree['m_VertexData']['m_VertexCount'] = mesh_info['vertex_count']
-                    tree['m_VertexData']['m_DataSize'] = mesh_info['raw_vertex_data']
+                    tree['m_VertexData']['m_VertexCount'] = floor_mesh['vertex_count']
+                    tree['m_VertexData']['m_DataSize'] = floor_mesh['raw_vertex_data']
                     tree['m_VertexData']['m_Channels'] = UNITY_48B_CHANNELS
-                    tree['m_IndexBuffer'] = mesh_info['raw_index_buffer']
-                    tree['m_IndexFormat'] = mesh_info['index_format']
+                    tree['m_IndexBuffer'] = floor_mesh['raw_index_buffer']
+                    tree['m_IndexFormat'] = floor_mesh['index_format']
                     tree['m_SubMeshes'] = [{
                         'firstByte': 0,
-                        'indexCount': mesh_info['index_count'],
+                        'indexCount': floor_mesh['index_count'],
                         'topology': 0,
                         'baseVertex': 0,
                         'firstVertex': 0,
-                        'vertexCount': mesh_info['vertex_count'],
+                        'vertexCount': floor_mesh['vertex_count'],
                         'localAABB': {
-                            'm_Center': mesh_info['aabb_center'],
-                            'm_Extent': mesh_info['aabb_extent']
+                            'm_Center': floor_mesh['aabb_center'],
+                            'm_Extent': floor_mesh['aabb_extent']
                         }
                     }]
                     tree['m_LocalAABB'] = {
-                        'm_Center': mesh_info['aabb_center'],
-                        'm_Extent': mesh_info['aabb_extent']
+                        'm_Center': floor_mesh['aabb_center'],
+                        'm_Extent': floor_mesh['aabb_extent']
                     }
                     o.save_typetree(tree)
 
@@ -850,11 +883,15 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 if gname in ('Base', 'BaseCollision', 'TeleportArea'):
                     base_go_pids.add(o.path_id)
                 if gname == 'Base':
-                    tree['m_Tag'] = 20000  # Tag with 'TeleportArea'
+                    tree['m_Tag'] = 0      # Tag 0 (Untagged) - physical collision for walls/location
                     tree['m_Layer'] = 10   # Layer 10 (Location)
                     o.save_typetree(tree)
-                elif gname in ('BaseCollision', 'TeleportArea'):
-                    tree['m_Tag'] = 20000  # Tag with 'TeleportArea'
+                elif gname == 'TeleportArea':
+                    tree['m_Tag'] = 0      # Tag 0 (Untagged)
+                    tree['m_Layer'] = 0    # Layer 0 (Default)
+                    o.save_typetree(tree)
+                elif gname == 'BaseCollision':
+                    tree['m_Tag'] = 20000  # Tag 20000 ('TeleportArea') - dedicated walkable teleport floor
                     tree['m_Layer'] = 0    # Layer 0 (Default)
                     o.save_typetree(tree)
 
@@ -870,8 +907,16 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
             elif o.type.name == 'MeshCollider':
                 tree = o.read_typetree()
                 go_ref = tree.get('m_GameObject', {}).get('m_PathID')
-                # Enable MeshCollider on BOTH Base (Layer 10 Location) and BaseCollision (Layer 0 TeleportArea)
-                if o.path_id in (207, 210) or go_ref in (49, 64):
+                # Base (49) uses Mesh 32 (walls + floor collision, NO ceiling)
+                if o.path_id == 207 or go_ref == 49:
+                    tree['m_Mesh'] = {'m_FileID': 1, 'm_PathID': 32}
+                    tree['m_Enabled'] = True
+                    tree['m_IsTrigger'] = False
+                    tree['m_Convex'] = False
+                    o.save_typetree(tree)
+                # BaseCollision (64) uses Mesh 39 (walkable floor ONLY with TeleportArea tag)
+                elif o.path_id == 210 or go_ref == 64:
+                    tree['m_Mesh'] = {'m_FileID': 1, 'm_PathID': 39}
                     tree['m_Enabled'] = True
                     tree['m_IsTrigger'] = False
                     tree['m_Convex'] = False
