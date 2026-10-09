@@ -685,21 +685,39 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     tree['m_Materials'] = [{'m_FileID': 1, 'm_PathID': 25}]
                 o.save_typetree(tree)
 
-        # 4.4. Reset Transform on Base and BaseCollision to remove -90 degree tilt
+        # 4.4. Reset Transform on Base, TeleportArea, and BaseCollision to remove -90 tilt and 180 deg rotation
         base_go_pids = set()
         for o in env.objects:
             if o.type.name == 'GameObject':
                 tree = o.read_typetree()
-                if tree.get('m_Name') in ('Base', 'BaseCollision'):
+                gname = tree.get('m_Name')
+                if gname in ('Base', 'BaseCollision', 'TeleportArea'):
                     base_go_pids.add(o.path_id)
+                if gname in ('BaseCollision', 'TeleportArea'):
+                    tree['m_Tag'] = 20000  # Tag with 'TeleportArea'
+                    tree['m_Layer'] = 0    # Layer 0 (Default)
+                    o.save_typetree(tree)
 
         for o in env.objects:
             if o.type.name == 'Transform':
                 tree = o.read_typetree()
                 go_ref = tree.get('m_GameObject', {}).get('m_PathID')
-                if go_ref in base_go_pids or o.path_id in (117, 128):
+                if go_ref in base_go_pids or o.path_id in (117, 127, 128):
                     tree['m_LocalPosition'] = {'x': 0.0, 'y': 0.0, 'z': 0.0}
                     tree['m_LocalRotation'] = {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}
+                    tree['m_LocalScale'] = {'x': 1.0, 'y': 1.0, 'z': 1.0}
+                    o.save_typetree(tree)
+            elif o.type.name == 'MeshCollider':
+                tree = o.read_typetree()
+                go_ref = tree.get('m_GameObject', {}).get('m_PathID')
+                # Disable MeshCollider on Base (visual mesh) so BaseCollision under TeleportArea is the sole physical & teleport collider
+                if o.path_id == 207 or go_ref == 49:
+                    tree['m_Enabled'] = False
+                    o.save_typetree(tree)
+                elif o.path_id == 210 or go_ref == 64:
+                    tree['m_Enabled'] = True
+                    tree['m_IsTrigger'] = False
+                    tree['m_Convex'] = False
                     o.save_typetree(tree)
 
         # 4.5. Dynamic lookup for Spawn Point Transform and Directional Light
@@ -741,13 +759,37 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 if 'm_BakingOutput' in tree:
                     tree['m_BakingOutput']['isBaked'] = False
                     tree['m_BakingOutput']['lightmapBakeType'] = 4
+
+                # Disable shadows on Directional Light if NONE (recommended for interiors so ceilings do not occlude)
+                shadow_mode = getattr(scene_props, 'light_shadows', 'NONE')
+                if 'm_Shadows' in tree:
+                    tree['m_Shadows']['m_Type'] = 2 if shadow_mode == 'SOFT' else 0
                 o.save_typetree(tree)
             elif o.type.name == 'RenderSettings':
                 tree = o.read_typetree()
+                # Enable Gradient Ambient Mode (1: Trilight) so interiors are evenly and richly lit
+                tree['m_AmbientMode'] = 1
+                tree['m_AmbientIntensity'] = 1.0
+                lcol = getattr(scene_props, 'light_color', (1.0, 0.95, 0.82))
+                tree['m_AmbientSkyColor'] = {
+                    'r': min(1.0, float(lcol[0]) * 0.95),
+                    'g': min(1.0, float(lcol[1]) * 0.90),
+                    'b': min(1.0, float(lcol[2]) * 0.78),
+                    'a': 1.0
+                }
+                tree['m_AmbientEquatorColor'] = {
+                    'r': min(1.0, float(lcol[0]) * 0.80),
+                    'g': min(1.0, float(lcol[1]) * 0.76),
+                    'b': min(1.0, float(lcol[2]) * 0.65),
+                    'a': 1.0
+                }
+                tree['m_AmbientGroundColor'] = {
+                    'r': min(1.0, float(lcol[0]) * 0.50),
+                    'g': min(1.0, float(lcol[1]) * 0.46),
+                    'b': min(1.0, float(lcol[2]) * 0.38),
+                    'a': 1.0
+                }
                 tree['m_ReflectionIntensity'] = 1.0
-                tree['m_AmbientSkyColor'] = {'r': 0.65, 'g': 0.65, 'b': 0.65, 'a': 1.0}
-                tree['m_AmbientEquatorColor'] = {'r': 0.50, 'g': 0.50, 'b': 0.50, 'a': 1.0}
-                tree['m_AmbientGroundColor'] = {'r': 0.35, 'g': 0.35, 'b': 0.35, 'a': 1.0}
                 o.save_typetree(tree)
 
         out_buf = io.BytesIO()

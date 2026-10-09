@@ -228,6 +228,7 @@ def draw_varwin_scene_ui(layout, context, scene, scene_props):
     box_env.label(text="4. Освещение сцены", icon='LIGHT_SUN')
     box_env.prop(scene_props, "light_intensity")
     box_env.prop(scene_props, "light_color")
+    box_env.prop(scene_props, "light_shadows")
 
     # 5. Export Actions
     layout.separator()
@@ -463,6 +464,14 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
         default="CURSOR"
     )
     light_intensity: bpy.props.FloatProperty(name="Яркость солнца", default=1.0, min=0.0)
+    light_shadows: bpy.props.EnumProperty(
+        name="Тени солнца",
+        items=[
+            ("NONE", "Без теней (Интерьер)", "Отключает тени от крыши для равномерного освещения интерьеров"),
+            ("SOFT", "Мягкие тени (Экстерьер)", "Реалистичные мягкие тени от солнца для открытых уличных локаций"),
+        ],
+        default="NONE"
+    )
     generate_preview: bpy.props.BoolProperty(name="Создать превью", default=True)
 
     def invoke(self, context, event):
@@ -475,6 +484,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             self.selected_only = sp.selected_only
             self.spawn_mode = sp.spawn_mode if sp.spawn_mode in ('CURSOR', 'ACTIVE_OBJECT', 'ORIGIN') else 'CURSOR'
             self.light_intensity = sp.light_intensity
+            self.light_shadows = sp.light_shadows
             self.generate_preview = sp.generate_preview
 
         return super().invoke(context, event)
@@ -507,6 +517,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
         box_env = layout.box()
         box_env.label(text="Освещение", icon='LIGHT_SUN')
         box_env.prop(self, "light_intensity")
+        box_env.prop(self, "light_shadows")
         box_env.prop(self, "generate_preview")
 
     def execute(self, context):
@@ -524,6 +535,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             sp.selected_only = self.selected_only
             sp.spawn_mode = self.spawn_mode
             sp.light_intensity = self.light_intensity
+            sp.light_shadows = self.light_shadows
             sp.generate_preview = self.generate_preview
 
         try:

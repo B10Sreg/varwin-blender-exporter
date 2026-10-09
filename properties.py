@@ -380,6 +380,15 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         default=(1.0, 0.95, 0.85),
         description="Цвет основного источника света"
     )
+    light_shadows: bpy.props.EnumProperty(
+        name="Тени солнца",
+        items=[
+            ("NONE", "Без теней (Интерьер)", "Отключает тени от крыши для равномерного освещения интерьеров"),
+            ("SOFT", "Мягкие тени (Экстерьер)", "Реалистичные мягкие тени от солнца для открытых уличных локаций"),
+        ],
+        default="NONE",
+        description="Режим отбрасывания теней направленным источником света"
+    )
 
     # Export & Installation
     generate_preview: bpy.props.BoolProperty(
