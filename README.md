@@ -6,7 +6,7 @@
 
 # 🇷🇺 Русский
 
-Профессиональный кроссплатформенный аддон для **Blender (4.0 – 5.x)**, позволяющий экспортировать 3D-модели и целые локации напрямую в автономные пакеты **Varwin Object (`.vwo`)** и **Varwin Scene Template (`.vwt`)** с полной поддержкой возможностей **Varwin Unity SDK** (PhysX Rigidbody, Colliders, VR Interaction, SubMeshes, Teleportation, Directional & Point Lighting) **без необходимости установки и запуска Unity Editor**.
+Профессиональный кроссплатформенный аддон для **Blender (4.0 – 5.x)**, позволяющий экспортировать 3D-модели и целые локации напрямую в автономные пакеты **Varwin Object (`.vwo`)** и **Varwin Scene Template (`.vwst`)** с полной поддержкой возможностей **Varwin Unity SDK** (PhysX Rigidbody, Colliders, VR Interaction, SubMeshes, Teleportation, Directional & Point Lighting) **без необходимости установки и запуска Unity Editor**.
 
 Работает автономно в среде Windows, Linux и macOS.
 
@@ -38,7 +38,7 @@
   - ⚡ Сенсор / Зона событий (Триггер, Без коллизий)
   - 🎯 Площадка телепортации (Walkable Floor)
 
-### 2. Шаблоны сцен и локаций (Scene Templates `.vwt`)
+### 2. Шаблоны сцен и локаций (Scene Templates `.vwst`)
 - **Разделение геометрии и коллизий:**
   - Автоматическое формирование визуального меша локации (`Base`, Layer 10).
   - Выделенная физическая коллизия (`BaseCollision`, Mesh 32) с автоматическим исключением потолочных полигонов, предотвращающая застревание игрока под сводами.
@@ -85,10 +85,10 @@
 
 - **N-панель 3D Viewport:** вкладка **Varwin** — единый центр управления объектами, сценой, пресетами и зависимостями.
 - **Вкладка Object Properties:** панель **Varwin Object (.vwo)** для настройки физики, коллайдеров и VR-хвата выбранного меша.
-- **Вкладка Scene Properties:** панель **Varwin Scene Template (.vwt)** для настройки точки спавна, солнца, теней и автоустановки локации.
+- **Вкладка Scene Properties:** панель **Varwin Scene Template (.vwst)** для настройки точки спавна, солнца, теней и автоустановки локации.
 - **Меню экспорта:**
   - `File → Export → Varwin Object (.vwo)`
-  - `File → Export → Varwin Scene Template (.vwt)`
+  - `File → Export → Varwin Scene Template (.vwst)`
 
 ---
 
@@ -116,7 +116,7 @@ sprops = scene.varwin_scene
 sprops.scene_name_ru = "Эфирный Разлом"
 sprops.spawn_position = (-35.0, 0.0, 2.5)
 sprops.light_shadows = "SOFT"
-build_vwt_package(scene, sprops, "/path/to/rift_location.vwt")
+build_vwt_package(scene, sprops, "/path/to/rift_location.vwst")
 ```
 
 Запуск в фоновом режиме:
@@ -128,7 +128,7 @@ blender --background scene.blend --python export_script.py
 
 # 🇬🇧 English
 
-A professional Blender add-on (Blender 4.0 – 5.x) enabling direct export of 3D assets and environments into standalone **Varwin Object (`.vwo`)** and **Varwin Scene Template (`.vwt`)** packages with complete **Varwin Unity SDK** feature set without opening or installing the Unity Editor.
+A professional Blender add-on (Blender 4.0 – 5.x) enabling direct export of 3D assets and environments into standalone **Varwin Object (`.vwo`)** and **Varwin Scene Template (`.vwst`)** packages with complete **Varwin Unity SDK** feature set without opening or installing the Unity Editor.
 
 Runs natively on **Windows, Linux, and macOS**.
 
@@ -141,7 +141,7 @@ Runs natively on **Windows, Linux, and macOS**.
   - Colliders (Convex Mesh, Box, Sphere, Capsule, Trigger zones).
   - XR Interaction (Grabbable, Touchable, Usable, Obstacle, Teleport Area).
   - 1-Click VR & Physics Presets.
-- **Scene Templates (`.vwt`):**
+- **Scene Templates (`.vwst`):**
   - Smart geometry splitting: Visual mesh (`Base`), overhead-free physical collisions (`BaseCollision`), and dedicated locomotion surface (`TeleportArea`, Tag 20000).
   - Directional Sun extraction: synchronizes Blender `SUN` rotation to Unity's directional light with soft daylight shadows (strength 0.55).
   - Flat ambient mode 3: prevents pitch-black surfaces on mobile VR (Meta Quest 2) and PCVR.

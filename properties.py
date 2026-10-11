@@ -305,7 +305,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         name="Раздел",
         items=[
             ("OBJECT", "Объект (.vwo)", "Настройки 3D-объекта, Rigidbody, коллайдеров и VR", "OBJECT_DATA", 0),
-            ("SCENE", "Сцена (.vwt)", "Настройки шаблона сцены и точки спавна", "WORLD", 1),
+            ("SCENE", "Сцена (.vwst)", "Настройки шаблона сцены и точки спавна", "WORLD", 1),
             ("PRESETS", "Пресеты", "Быстрые пресеты физики", "PRESET", 2),
             ("SYSTEM", "SDK & Пути", "Интеграция с Varwin XRMS и пути", "PREFERENCES", 3),
         ],

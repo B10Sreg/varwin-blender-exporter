@@ -242,7 +242,7 @@ def draw_varwin_scene_ui(layout, context, scene, scene_props):
 
     row_save = box_exp.row()
     row_save.scale_y = 1.2
-    row_save.operator("scene.varwin_export_vwt", text="Экспорт шаблона сцены (.vwt)...", icon='FILE_FOLDER')
+    row_save.operator("scene.varwin_export_vwt", text="Экспорт шаблона сцены (.vwst)...", icon='FILE_FOLDER')
 
 
 # ==============================================================================
@@ -431,14 +431,14 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
 
 
 class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
-    """Экспорт сцены Blender в готовый шаблон сцены Varwin Scene Template (.vwt)"""
+    """Экспорт сцены Blender в готовый шаблон сцены Varwin Scene Template (.vwst)"""
     bl_idname = "scene.varwin_export_vwt"
-    bl_label = "Экспорт шаблона сцены Varwin (.vwt)"
+    bl_label = "Экспорт шаблона сцены Varwin (.vwst)"
     bl_options = {'PRESET', 'REGISTER', 'UNDO'}
 
-    filename_ext = ".vwt"
+    filename_ext = ".vwst"
     filter_glob: bpy.props.StringProperty(
-        default="*.vwt",
+        default="*.vwst",
         options={'HIDDEN'}
     )
 
@@ -540,7 +540,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
 
         try:
             res = build_vwt_package(scene, self, self.filepath)
-            msg = f"Шаблон сцены .vwt собран ({res.get('triangles', 0)} полигонов, {res['size'] // 1024} КБ)"
+            msg = f"Шаблон сцены .vwst собран ({res.get('triangles', 0)} полигонов, {res['size'] // 1024} КБ)"
             if res.get('installed'):
                 msg += f" | {res.get('install_message')}"
             else:
@@ -598,7 +598,7 @@ class SCENE_OT_varwin_quick_export_vwt(bpy.types.Operator):
     """Быстрый экспорт шаблона сцены со всей геометрией в Varwin"""
     bl_idname = "scene.varwin_quick_export_vwt"
     bl_label = "Собрать сцену в Varwin"
-    bl_description = "Мгновенно собирает .vwt геометрию и регистрирует шаблон сцены в локальной библиотеке Varwin"
+    bl_description = "Мгновенно собирает .vwst геометрию и регистрирует шаблон сцены в локальной библиотеке Varwin"
 
     def execute(self, context):
         scene = context.scene
@@ -616,11 +616,11 @@ class SCENE_OT_varwin_quick_export_vwt(bpy.types.Operator):
             out_dir = os.path.expanduser("~/Varwin_Exported_VWT")
 
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{safe_name}.vwt")
+        out_path = os.path.join(out_dir, f"{safe_name}.vwst")
 
         try:
             res = build_vwt_package(scene, props, out_path)
-            msg = f"Шаблон сцены '{safe_name}.vwt' готов ({res.get('triangles', 0)} tris, {res['size'] // 1024} КБ)"
+            msg = f"Шаблон сцены '{safe_name}.vwst' готов ({res.get('triangles', 0)} tris, {res['size'] // 1024} КБ)"
             if res.get('installed'):
                 msg += " | Добавлен в каталог шаблонов Varwin!"
             else:
@@ -809,7 +809,7 @@ def draw_varwin_unified_ui(layout, context):
     r1 = col_tabs.row(align=True)
     r1.scale_y = 1.2
     r1.prop_enum(sp, "ui_tab", "OBJECT", text="📦 Объект (.vwo)")
-    r1.prop_enum(sp, "ui_tab", "SCENE", text="🌐 Сцена (.vwt)")
+    r1.prop_enum(sp, "ui_tab", "SCENE", text="🌐 Сцена (.vwst)")
     r2 = col_tabs.row(align=True)
     r2.scale_y = 1.2
     r2.prop_enum(sp, "ui_tab", "PRESETS", text="⚡ Пресеты")
@@ -908,7 +908,7 @@ class OBJECT_PT_varwin_object(bpy.types.Panel):
 
 class SCENE_PT_varwin_scene(bpy.types.Panel):
     """Панель параметров Varwin Scene во вкладке Scene Properties"""
-    bl_label = "Varwin Scene Template (.vwt)"
+    bl_label = "Varwin Scene Template (.vwst)"
     bl_idname = "SCENE_PT_varwin_scene"
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'

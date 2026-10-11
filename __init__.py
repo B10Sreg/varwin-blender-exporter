@@ -4,7 +4,7 @@ bl_info = {
     "version": (1, 1, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Object / Scene | 3D Viewport > Sidebar > Varwin | File > Export",
-    "description": "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwt) в Varwin XRMS со всеми возможностями Unity SDK (Rigidbody, Colliders, VR Interaction, Spawns)",
+    "description": "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwst) в Varwin XRMS со всеми возможностями Unity SDK (Rigidbody, Colliders, VR Interaction, Spawns)",
     "doc_url": "https://varwin.com",
     "category": "Import-Export",
 }
@@ -15,7 +15,7 @@ from . import ui
 
 def menu_func_export(self, context):
     self.layout.operator(ui.OBJECT_OT_varwin_export.bl_idname, text="Varwin Object (.vwo)")
-    self.layout.operator(ui.SCENE_OT_varwin_export_vwt.bl_idname, text="Varwin Scene Template (.vwt)")
+    self.layout.operator(ui.SCENE_OT_varwin_export_vwt.bl_idname, text="Varwin Scene Template (.vwst)")
 
 def cleanup_export_menu():
     """Removes all Varwin callbacks from File > Export menu to eliminate duplicates."""
