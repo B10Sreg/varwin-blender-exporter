@@ -376,6 +376,11 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
         if not obj_materials:
             obj_materials.append(extract_material_properties(None))
 
+        is_foliage = obj.name.startswith(('Env_Tree', 'Env_Bush', 'Foliage', 'Tree_', 'Bush_'))
+        ground_kw = ('cube', 'floor', 'ground', 'ploshad', 'square', 'terrain', 'road', 'street', 'walk', 'path', 'land')
+        obj_name_lower = obj.name.lower()
+        is_ground_obj = any(k in obj_name_lower for k in ground_kw)
+
         for tri in mesh.loop_triangles:
             poly = mesh.polygons[tri.polygon_index]
             slot_idx = poly.material_index if 0 <= poly.material_index < len(obj_materials) else 0
@@ -464,13 +469,13 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
             avg_ny = (tri_verts[0][4] + tri_verts[1][4] + tri_verts[2][4]) / 3.0
             avg_py = (tri_verts[0][1] + tri_verts[1][1] + tri_verts[2][1]) / 3.0
 
-            # 1. Walkable floor (normal up, near floor level)
-            if avg_ny > 0.6 and avg_py <= 0.35:
+            # 1. Walkable floor (normal up, ground or pedestrian elevation <= 2.5m, not vegetation)
+            if not is_foliage and avg_ny > 0.6 and (avg_py <= 0.35 or (is_ground_obj and -2.0 <= avg_py <= 3.0) or (-1.5 <= avg_py <= 2.5 and not obj.name.startswith(('Bldg_', 'Building_', 'Wall_', 'Roof_')))):
                 floor_triangles.append(tri_verts)
 
-            # 2. Collision (walls, pillars, floors - exclude ceiling above 1.8m facing down or high geometry)
+            # 2. Collision (walls, pillars, floors, props - exclude ceiling above 1.8m facing down, and exclude pure foliage to prevent PhysX lag)
             is_ceiling = (avg_ny < -0.5 and avg_py > 1.8) or (avg_py > 2.65 and avg_ny < -0.2)
-            if not is_ceiling:
+            if not is_ceiling and not is_foliage:
                 collision_triangles.append(tri_verts)
 
             all_triangles.append(tri_verts)

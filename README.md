@@ -1,105 +1,172 @@
 # Varwin VWO & Scene Exporter for Blender
 
-[🇷🇺 Русский](#-русский) | [🇬🇧 English](#-english)
+[🇷🇺 Документация на русском](#-русский) | [🇬🇧 English Documentation](#-english)
 
 ---
 
 # 🇷🇺 Русский
 
-Профессиональный аддон прямого экспорта 3D-моделей и шаблонов сцен из **Blender (4.0 - 4.2+ LTS)** в автономные пакеты **Varwin Object (`.vwo`)** и **Varwin Scene Template (`.vwt`)** со всеми возможностями **Varwin Unity SDK** без необходимости установки или запуска Unity Editor.
+Профессиональный кроссплатформенный аддон для **Blender (4.0 – 5.x)**, позволяющий экспортировать 3D-модели и целые локации напрямую в автономные пакеты **Varwin Object (`.vwo`)** и **Varwin Scene Template (`.vwt`)** с полной поддержкой возможностей **Varwin Unity SDK** (PhysX Rigidbody, Colliders, VR Interaction, SubMeshes, Teleportation, Directional & Point Lighting) **без необходимости установки и запуска Unity Editor**.
 
-Работает полностью автономно на **Windows, Linux и macOS**.
+Работает автономно в среде Windows, Linux и macOS.
 
 ---
 
-## 🚀 Основные возможности
+## 🌟 Ключевые возможности
 
-### 1. Полная замена Varwin Unity SDK внутри Blender:
+### 1. Интерактивные объекты (Varwin Objects `.vwo`)
 - **Физика твердых тел (PhysX Rigidbody):**
-  - Масса (кг), гравитация, кинематический режим (Is Kinematic).
-  - Линейное (Drag) и угловое (Angular Drag) сопротивление среды.
-  - Режимы дискретизации столкновений: *Discrete, Continuous, Continuous Dynamic, Continuous Speculative*.
-  - Интерполяция движения (*None, Interpolate, Extrapolate*).
-  - Заморозка степеней свободы (*Freeze Position & Rotation X, Y, Z*).
-- **Физические материалы:**
-  - Коэффициенты упругости (*Bounciness*), динамического и статического трения (*Friction*).
+  - Масса (кг), симуляция гравитации, кинематический режим (*Is Kinematic*).
+  - Линейное (*Drag*) и угловое (*Angular Drag*) сопротивление.
+  - Дискретизация столкновений: *Discrete, Continuous, Continuous Dynamic, Continuous Speculative*.
+  - Интерполяция движения: *None, Interpolate, Extrapolate*.
+  - Блокировка степеней свободы (*Freeze Position & Rotation X, Y, Z*).
 - **Физические коллайдеры:**
-  - **Convex Mesh (Выпуклый меш):** бинарная генерация вершинных буферов с прямым шагом без искажений PhysX QuickHull.
-  - **Box Collider, Sphere Collider, Capsule Collider:** автоматический расчет габаритов по геометрии или ручная настройка.
-  - **Триггер (Is Trigger):** сенсорные зоны для регистрации событий в Blockly.
-- **VR Взаимодействие (XR Interaction Flags):**
-  - **Grabbable (Хват):** возможность брать предмет в руку контроллером VR.
-  - **Touchable (Касание):** реакция на физическое касание рукой или другим предметом.
-  - **Usable (Использование):** реакция на нажатие триггера контроллера при удержании.
-  - **Obstacle (Препятствие):** блокировка луча телепортации.
-  - **Teleport Area (Площадка телепортации):** поверхность, на которую разрешена телепортация игрока.
-- **Поддержка многоматериальности (Multi-Material SubMeshes):**
-  - Нарезка полигонов на независимые сабмеши по слотам материалов Blender.
-  - Клонирование и настройка PBR Standard шейдеров (Base Color, Metallic, Roughness/Smoothness, Emission).
-  - Адаптивное ограничение Metallic для исключения черных отражений при отсутствии запеченных кубмапов.
+  - **Convex Mesh:** прямое кодирование вершинного буфера без артефактов PhysX QuickHull.
+  - **Box / Sphere / Capsule Collider:** автоматический расчет по Bounding Box или ручные размеры.
+  - **Is Trigger:** режим сенсорной зоны для регистрации событий и логики Blockly.
+- **VR Взаимодействие (XR Interaction):**
+  - **Grabbable:** хват и перемещение контроллером в VR.
+  - **Touchable:** регистрация физического касания рукой игрока.
+  - **Usable:** действие по нажатию триггера контроллера при удержании.
+  - **Obstacle:** блокировка луча телепортации.
+  - **Teleport Area:** поверхность, разрешенная для перемещения телепортом.
+- **Быстрые пресеты в 1 клик:**
+  - 🎈 Легкий предмет (1 кг, Grabbable, Динамика)
+  - 🏋️ Тяжелый объект (25 кг, Grabbable, Инерция)
+  - 🏛 Статичный проп (Кинематика, Препятствие)
+  - ⚡ Сенсор / Зона событий (Триггер, Без коллизий)
+  - 🎯 Площадка телепортации (Walkable Floor)
 
-### 2. Экспорт шаблонов сцен (Scene Templates `.vwt`):
-- Экспорт всей геометрии окружения и архитектуры локации в единый шаблон мира.
-- Настройка точки спавна игрока в VR:
-  - По текущему 3D Курсору;
-  - По положению активного объекта;
-  - В начале координат (0, 0, 0);
-  - Ручные точные координаты (X, Y, Z) и угол взгляда игрока.
-- Настройка солнечного освещения (*Directional Light Realtime*) и атмосферы (*Ambient*).
-- Автоматическая генерация превью 512x512 и миниатюр для библиотеки Varwin.
+### 2. Шаблоны сцен и локаций (Scene Templates `.vwt`)
+- **Разделение геометрии и коллизий:**
+  - Автоматическое формирование визуального меша локации (`Base`, Layer 10).
+  - Выделенная физическая коллизия (`BaseCollision`, Mesh 32) с автоматическим исключением потолочных полигонов, предотвращающая застревание игрока под сводами.
+  - Специализированная поверхность телепортации (`TeleportArea`, Mesh 39, Tag 20000) для плавного и точного VR-передвижения.
+- **Освещение и атмосфера:**
+  - Передача реального угла и кватерниона вращения солнца (`SUN` Light в Blender) в направленный свет Unity (`Directional Light_BAKED`).
+  - Мягкие реалистичные тени (*Soft Shadows*, сила 0.55), устраняющие эффект «черных провалов».
+  - Плоский рассеянный рассеянный свет (*Flat Ambient Mode 3*) с автобалансом цвета неба, гарантирующий корректный рендеринг на Oculus Quest 2 и PCVR.
+  - Автоматический перенос точечных источников света (*Point Lights*) из Blender в сцену Unity.
+- **Точка спавна игрока:**
+  - По положению 3D Курсора;
+  - По выделенному объекту;
+  - В центре координат (0, 0, 0);
+  - Точные координаты (X, Y, Z) и угол поворота взгляда (°).
 
-### 3. Кроссплатформенность и интеграция с Varwin XRMS:
-- **Кроссплатформенный автопоиск `VarwinData18`:**
-  - Windows: `%APPDATA%\VarwinData18`, `%LOCALAPPDATA%\VarwinData18`, `C:\ProgramData\VarwinData18`
-  - Linux: `~/.config/VarwinData18`, `/var/opt/VarwinData18`
-  - macOS: `~/Library/Application Support/VarwinData18`
-- **Прямая регистрация в базе данных SQLite3:**
-  - При включенном чекбоксе *«Установить в Varwin»* объект или шаблон сцены мгновенно регистрируются в локальной библиотеке.
-  - Использование детерминированных UUID гарантирует, что повторный экспорт обновляет ассет на месте без создания дубликатов.
-- **Автономный экспорт на диск:**
-  - При отключенном чекбоксе собирается чистый файл `.vwo` или `.vwt`, готовый для передачи клиентам или загрузки через веб-интерфейс Varwin RMS.
+### 3. PBR Материалы и Шейдеры
+- Нарезка геометрии на независимые SubMeshes по слотам материалов Blender.
+- Автоматическая трансляция Principled BSDF в Unity Standard Shader:
+  - Base Color, Roughness, Metallic, Glossiness, Emission Color/Keywords.
+- Умный ограничитель Metallic (не более 0.80) для предотвращения абсолютно черных поверхностей при отсутствии запеченных кубмапов отражений.
+- Автоматический Triplanar UV Fallback для объектов без развертки.
+
+### 4. 1-Click интеграция с Varwin XRMS
+- Кроссплатформенный поиск папки `VarwinData18`:
+  - **Linux:** `~/.config/VarwinData18`, `/var/opt/VarwinData18`
+  - **Windows:** `%APPDATA%\VarwinData18`, `%LOCALAPPDATA%\VarwinData18`, `C:\ProgramData\VarwinData18`
+  - **macOS:** `~/Library/Application Support/VarwinData18`
+- Прямая распаковка и регистрация в SQLite3 базе данных `database.db`.
+- Детерминированные UUID5: повторный экспорт сцены или объекта обновляет ассет на месте без дублирования в библиотеке.
 
 ---
 
-## 📦 Установка
+## 📦 Установка аддона
 
-1. Скачайте репозиторий в виде `.zip` архива.
-2. В Blender откройте: `Edit -> Preferences -> Add-ons`.
-3. Нажмите кнопку **Install...** (или стрелочку в правом верхнем углу в Blender 4.2 -> *Install from Disk...*) и выберите скачанный `.zip`.
-4. Включите галочку напротив **Varwin VWO & Scene Exporter**.
-5. Нажмите кнопку **«Установить зависимости (UnityPy)»** в настройках аддона (библиотека установится во встроенный Python Blender автоматически в 1 клик).
+1. Скачайте папку аддона `varwin_vwo_exporter` или упакуйте её в `.zip`.
+2. В Blender откройте меню: **Edit → Preferences → Add-ons** (в Blender 4.2+ — **Get Extensions → Install from Disk...**).
+3. Выберите скачанный `.zip` или папку аддона.
+4. Активируйте галочку **Varwin VWO & Scene Exporter**.
+5. В настройках аддона нажмите **«Установить зависимости (UnityPy)»** — библиотека будет установлена во встроенный Python Blender автоматически.
 
 ---
 
-## 🖥️ Где находятся настройки в Blender
+## 🖥️ Использование в интерфейсе Blender
 
-1. **Боковая N-панель 3D Viewport:**
-   - Нажмите клавишу **`N`** в 3D окне и перейдите на вкладку **Varwin**. Здесь доступен единый пульт управления объектом, сценой, пресетами и статусом SDK.
-2. **Окно свойств (Properties):**
-   - **Для объекта:** вкладка *Object Properties* (иконка оранжевого куба) -> панель *Varwin Object (.vwo)*.
-   - **Для сцены:** вкладка *Scene Properties* (иконка конуса и сферы) -> панель *Varwin Scene Template (.vwt)*.
-   - **Единые настройки:** вкладка *Texture* (нижний значок в столбце) или кнопка *[ ⚙ Varwin ]* в шапке окна Properties.
-3. **Меню экспорта:**
-   - `File -> Export -> Varwin Object (.vwo)`
-   - `File -> Export -> Varwin Scene Template (.vwt)`
+- **N-панель 3D Viewport:** вкладка **Varwin** — единый центр управления объектами, сценой, пресетами и зависимостями.
+- **Вкладка Object Properties:** панель **Varwin Object (.vwo)** для настройки физики, коллайдеров и VR-хвата выбранного меша.
+- **Вкладка Scene Properties:** панель **Varwin Scene Template (.vwt)** для настройки точки спавна, солнца, теней и автоустановки локации.
+- **Меню экспорта:**
+  - `File → Export → Varwin Object (.vwo)`
+  - `File → Export → Varwin Scene Template (.vwt)`
+
+---
+
+## 🐍 Использование в скриптах (Python CLI / Background Mode)
+
+Аддон поддерживает полную автоматизацию пакетной обработки через Python:
+
+```python
+import bpy
+from varwin_vwo_exporter.vwo_builder import build_vwo_package, build_vwt_package
+from varwin_vwo_exporter.properties import register as register_props
+
+register_props()
+
+# 1. Экспорт отдельного объекта
+obj = bpy.data.objects['MyHeroGauntlet']
+props = obj.varwin
+props.object_name_ru = "Перчатка Резонанса"
+props.grabbable = True
+build_vwo_package(obj, props, "/path/to/gauntlet.vwo")
+
+# 2. Экспорт локации
+scene = bpy.context.scene
+sprops = scene.varwin_scene
+sprops.scene_name_ru = "Эфирный Разлом"
+sprops.spawn_position = (-35.0, 0.0, 2.5)
+sprops.light_shadows = "SOFT"
+build_vwt_package(scene, sprops, "/path/to/rift_location.vwt")
+```
+
+Запуск в фоновом режиме:
+```bash
+blender --background scene.blend --python export_script.py
+```
 
 ---
 
 # 🇬🇧 English
 
-A professional Blender add-on (Blender 4.0 - 4.2+ LTS) for direct export of 3D models and scene environments into **Varwin Object (`.vwo`)** and **Varwin Scene Template (`.vwt`)** packages, fully supporting the **Varwin Unity SDK** feature set without requiring Unity Editor.
+A professional Blender add-on (Blender 4.0 – 5.x) enabling direct export of 3D assets and environments into standalone **Varwin Object (`.vwo`)** and **Varwin Scene Template (`.vwt`)** packages with complete **Varwin Unity SDK** feature set without opening or installing the Unity Editor.
 
-Runs seamlessly on **Windows, Linux, and macOS**.
+Runs natively on **Windows, Linux, and macOS**.
 
-## 🌟 Key Features
-- **Full Unity SDK parity:** PhysX Rigidbody (Mass, Gravity, IsKinematic, Drag, Constraints), Box/Sphere/Capsule/Convex colliders, VR interactions (Grabbable, Touchable, Usable, Obstacle, Teleport Area).
-- **Multi-material support:** Preserves multiple PBR material slots with automatic Unity Standard Shader configuration.
-- **Scene Templates (`.vwt`):** Export entire levels with VR player spawn points, realtime lighting, and auto-generated preview thumbnails.
-- **Direct Varwin XRMS integration:** Auto-detects local `VarwinData18` directory on all operating systems and registers assets directly into SQLite3.
-- **Deterministic GUIDs:** Re-exporting updates existing assets in place without cluttering the library with duplicate entries.
-- **1-Click Dependency Installer:** Automatically installs `UnityPy` into Blender's bundled Python environment.
+---
+
+## 🌟 Highlights
+
+- **Complete Unity SDK Parity:**
+  - PhysX Rigidbody (Mass, Gravity, IsKinematic, Linear/Angular Drag, Constraints, Collision Detection Modes).
+  - Colliders (Convex Mesh, Box, Sphere, Capsule, Trigger zones).
+  - XR Interaction (Grabbable, Touchable, Usable, Obstacle, Teleport Area).
+  - 1-Click VR & Physics Presets.
+- **Scene Templates (`.vwt`):**
+  - Smart geometry splitting: Visual mesh (`Base`), overhead-free physical collisions (`BaseCollision`), and dedicated locomotion surface (`TeleportArea`, Tag 20000).
+  - Directional Sun extraction: synchronizes Blender `SUN` rotation to Unity's directional light with soft daylight shadows (strength 0.55).
+  - Flat ambient mode 3: prevents pitch-black surfaces on mobile VR (Meta Quest 2) and PCVR.
+  - Point Light injection from Blender into the Unity scene.
+  - Configurable VR Player spawn points.
+- **PBR Multi-Material Pipeline:**
+  - Automatic SubMesh segmentation per material slot.
+  - Translation of Principled BSDF into Unity Standard Shader (Color, Metallic, Roughness, Emission).
+  - Metallic limiter (≤ 0.80) to eliminate black reflection artifacts without baked cubemaps.
+  - Triplanar UV fallback for procedural meshes.
+- **Direct 1-Click Varwin XRMS Integration:**
+  - Automatic OS-wide detection of `VarwinData18`.
+  - Direct installation into SQLite3 database (`database.db`) and asset storage.
+  - Deterministic UUID5 generation ensuring clean in-place updates.
+
+---
+
+## 📦 Installation
+
+1. Download or archive the `varwin_vwo_exporter` folder as `.zip`.
+2. In Blender: **Edit → Preferences → Add-ons** (or **Install from Disk...** in Blender 4.2+).
+3. Select the add-on package and enable **Varwin VWO & Scene Exporter**.
+4. In add-on preferences, click **"Install Dependencies (UnityPy)"** for 1-click automatic installation.
 
 ---
 
 ## 📄 License
-This project is licensed under the GNU General Public License v3.0 (GPL-3.0).
+GPL-3.0-or-later. Created by B10Sreg & Antigravity.

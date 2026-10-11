@@ -43,7 +43,7 @@ def generate_preview_images(target=None, out_dir: str = "", title: str = None, i
             # Render current frame
             bpy.ops.render.render(write_still=True)
 
-            if os.path.exists(render_path) and os.path.getsize(render_path) > 0:
+            if HAS_PIL and os.path.exists(render_path) and os.path.getsize(render_path) > 0:
                 with Image.open(render_path) as img:
                     img_rgb = img.convert("RGB")
                     buf_view = io.BytesIO()
@@ -57,20 +57,21 @@ def generate_preview_images(target=None, out_dir: str = "", title: str = None, i
                     buf_bundle = io.BytesIO()
                     img.resize((256, 256), Image.Resampling.LANCZOS).save(buf_bundle, format="PNG")
                     bundle_bytes = buf_bundle.getvalue()
-
-                try:
-                    os.remove(render_path)
-                except Exception:
-                    pass
-
-            # Restore scene settings
-            scene.render.filepath = old_filepath
-            scene.render.resolution_x = old_res_x
-            scene.render.resolution_y = old_res_y
-            scene.render.resolution_percentage = old_pct
         except Exception:
             # Fallback to PIL synthetic rendering
             pass
+        finally:
+            # Restore scene settings & clean up temp render
+            if scene:
+                scene.render.filepath = old_filepath
+                scene.render.resolution_x = old_res_x
+                scene.render.resolution_y = old_res_y
+                scene.render.resolution_percentage = old_pct
+            try:
+                if render_path and os.path.exists(render_path):
+                    os.remove(render_path)
+            except Exception:
+                pass
 
     # If Blender render was not used, generate via PIL or native Blender image
     if not view_bytes or not thumb_bytes or not bundle_bytes:

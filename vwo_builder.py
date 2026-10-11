@@ -562,9 +562,24 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
 
     # 1.2. Extract Sun Light if present in scene
     sun_obj = next((o for o in scene.objects if o.type == 'LIGHT' and o.data and o.data.type == 'SUN' and not o.hide_get()), None)
+    sun_rot_quat = None
     if sun_obj:
         sun_color = tuple(float(c) for c in sun_obj.data.color[:3])
         sun_intensity = float(getattr(sun_obj.data, 'energy', 1.0))
+        try:
+            import mathutils
+            b_dir = (sun_obj.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()
+            dx, dy, dz = float(b_dir.x), float(b_dir.z), float(b_dir.y)
+            pitch = math.asin(max(-1.0, min(1.0, -dy)))
+            yaw = math.atan2(dx, dz)
+            sun_rot_quat = (
+                math.cos(yaw / 2.0) * math.sin(pitch / 2.0),
+                math.sin(yaw / 2.0) * math.cos(pitch / 2.0),
+                -math.sin(yaw / 2.0) * math.sin(pitch / 2.0),
+                math.cos(yaw / 2.0) * math.cos(pitch / 2.0),
+            )
+        except Exception:
+            sun_rot_quat = None
     else:
         sun_color = tuple(float(c) for c in getattr(scene_props, 'light_color', (1.0, 0.95, 0.85))[:3])
         sun_intensity = float(getattr(scene_props, 'light_intensity', 1.0))
@@ -920,6 +935,7 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
 
         # 4.5. Dynamic lookup for Spawn Point Transform and Directional Light
         spawn_tf_pid = None
+        light_tf_pid = None
         light_pid = None
         for o in env.objects:
             if o.type.name == 'GameObject':
@@ -933,9 +949,11 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                         spawn_tf_pid = c['component']['m_PathID']
                         break
                 elif gname and 'Directional Light' in gname:
-                    for c in tree.get('m_Component', []):
-                        pid = c['component']['m_PathID']
-                        light_pid = pid
+                    comps = tree.get('m_Component', [])
+                    if len(comps) >= 1:
+                        light_tf_pid = comps[0]['component']['m_PathID']
+                    if len(comps) >= 2:
+                        light_pid = comps[-1]['component']['m_PathID']
 
         for o in env.objects:
             if o.type.name == 'Transform' and (o.path_id == spawn_tf_pid or o.path_id in (9, 103)):
@@ -943,10 +961,19 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 tree['m_LocalPosition'] = {'x': float(sx), 'y': float(sy), 'z': float(sz)}
                 tree['m_LocalRotation'] = {'x': 0.0, 'y': float(rot_y), 'z': 0.0, 'w': float(rot_w)}
                 o.save_typetree(tree)
+            elif o.type.name == 'Transform' and sun_rot_quat and (o.path_id == light_tf_pid or o.path_id == 80):
+                tree = o.read_typetree()
+                tree['m_LocalRotation'] = {
+                    'x': float(sun_rot_quat[0]),
+                    'y': float(sun_rot_quat[1]),
+                    'z': float(sun_rot_quat[2]),
+                    'w': float(sun_rot_quat[3]),
+                }
+                o.save_typetree(tree)
             elif o.type.name == 'Light' and (o.path_id == light_pid or o.path_id in (14, 219)):
                 tree = o.read_typetree()
-                # Soft directional fill so it doesn't wash out point lights or create harsh shadow voids
-                tree['m_Intensity'] = min(float(sun_intensity), 0.50)
+                # Use scene Sun intensity if present, or soft fill for interior
+                tree['m_Intensity'] = float(sun_intensity) if sun_obj else min(float(sun_intensity), 0.50)
                 tree['m_Color'] = {
                     'r': float(sun_color[0]),
                     'g': float(sun_color[1]),
@@ -958,9 +985,16 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     tree['m_BakingOutput']['isBaked'] = False
                     tree['m_BakingOutput']['lightmapBakeType'] = 4
 
-                # Disable directional shadows so ceiling geometry doesn't cast black shadows over interior
                 if 'm_Shadows' in tree:
-                    tree['m_Shadows']['m_Type'] = 0
+                    shadow_type = getattr(scene_props, 'light_shadows', 'NONE')
+                    if shadow_type == 'HARD':
+                        tree['m_Shadows']['m_Type'] = 1
+                        tree['m_Shadows']['m_Strength'] = 0.55
+                    elif shadow_type == 'SOFT':
+                        tree['m_Shadows']['m_Type'] = 2
+                        tree['m_Shadows']['m_Strength'] = 0.55
+                    else:
+                        tree['m_Shadows']['m_Type'] = 0
                 o.save_typetree(tree)
             elif o.type.name == 'RenderSettings':
                 tree = o.read_typetree()
