@@ -115,12 +115,17 @@ def install_vwo_to_varwin(vwo_filepath: str):
                 cur.execute("SELECT id FROM objects WHERE name LIKE ?", (f'%"{obj_name_en}"%',))
                 existing = cur.fetchone()
 
+        cur.execute("SELECT id FROM users ORDER BY id DESC LIMIT 1")
+        user_row = cur.fetchone()
+        owner_id = user_row[0] if user_row else 3
+
         if existing:
             # Update existing
             cur.execute("""
                 UPDATE objects SET
                     guid = ?, root_guid = ?,
                     name = ?, description = ?, config = ?, author = ?,
+                    owned_by = ?, updated_by = ?,
                     mobile_ready = 1, linux_ready = 1, size = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
@@ -129,17 +134,13 @@ def install_vwo_to_varwin(vwo_filepath: str):
                 json.dumps(install_meta.get('Description', {})),
                 json.dumps(install_meta.get('Config', {})),
                 json.dumps(install_meta.get('Author', {})),
+                owner_id, owner_id,
                 os.path.getsize(vwo_filepath),
                 existing[0]
             ))
             object_id = existing[0]
             action = "обновлен"
         else:
-            # Find admin/owner user_id (default to 3 or 1)
-            cur.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1")
-            user_row = cur.fetchone()
-            owner_id = user_row[0] if user_row else 3
-
             cur.execute("""
                 INSERT INTO objects (
                     guid, root_guid, config, embedded, content_license_id, author,
@@ -174,6 +175,12 @@ def install_vwo_to_varwin(vwo_filepath: str):
             object_id = cur.lastrowid
             action = "добавлен"
 
+        cur.execute("""
+            INSERT OR IGNORE INTO workspace_library_item_permissions_for_use
+                (workspace_id, root_guid, permit_type, created_at, created_by)
+            VALUES (3, ?, 'byUserType', CURRENT_TIMESTAMP, ?)
+        """, (root_guid, owner_id))
+
         conn.commit()
         return True, f"Объект успешно {action} в локальную библиотеку Varwin XRMS (ID: {object_id}, GUID: {guid})"
 
@@ -186,7 +193,7 @@ def install_vwo_to_varwin(vwo_filepath: str):
 
 def install_scene_template_to_varwin(vwt_filepath: str):
     """
-    Directly unpacks and registers .vwt into local Varwin XRMS SQLite database and scene-templates directory.
+    Directly unpacks and registers .vwst into local Varwin XRMS SQLite database and scene-templates directory.
     Returns (success: bool, message: str)
     """
     data_dir = get_varwin_data_path()
@@ -200,7 +207,7 @@ def install_scene_template_to_varwin(vwt_filepath: str):
     if not os.path.isfile(vwt_filepath):
         return False, f"Файл шаблона сцены не найден: {vwt_filepath}"
 
-    # Read install.json from vwt archive
+    # Read install.json from vwst archive
     with zipfile.ZipFile(vwt_filepath, 'r') as z:
         if 'install.json' not in z.namelist():
             return False, "Невалидный архив шаблона: отсутствует install.json"
@@ -224,6 +231,10 @@ def install_scene_template_to_varwin(vwt_filepath: str):
     cur = conn.cursor()
 
     try:
+        cur.execute("SELECT id FROM users ORDER BY id DESC LIMIT 1")
+        user_row = cur.fetchone()
+        owner_id = user_row[0] if user_row else 3
+
         cur.execute("SELECT id FROM scene_templates WHERE guid = ?", (guid,))
         existing = cur.fetchone()
         if not existing:
@@ -237,6 +248,7 @@ def install_scene_template_to_varwin(vwt_filepath: str):
                 UPDATE scene_templates SET
                     guid = ?, root_guid = ?,
                     name = ?, description = ?, config = ?, author = ?,
+                    owned_by = ?, updated_by = ?,
                     mobile_ready = 1, linux_ready = 1, size = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
@@ -245,16 +257,13 @@ def install_scene_template_to_varwin(vwt_filepath: str):
                 json.dumps(install_meta.get('Description', {})),
                 json.dumps(install_meta.get('Config', {})),
                 json.dumps(install_meta.get('Author', {})),
+                owner_id, owner_id,
                 os.path.getsize(vwt_filepath),
                 existing[0]
             ))
             template_id = existing[0]
             action = "обновлен"
         else:
-            cur.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1")
-            user_row = cur.fetchone()
-            owner_id = user_row[0] if user_row else 3
-
             cur.execute("""
                 INSERT INTO scene_templates (
                     guid, root_guid, config, content_license_id, author,
@@ -283,6 +292,12 @@ def install_scene_template_to_varwin(vwt_filepath: str):
             ))
             template_id = cur.lastrowid
             action = "добавлен"
+
+        cur.execute("""
+            INSERT OR IGNORE INTO workspace_library_item_permissions_for_use
+                (workspace_id, root_guid, permit_type, created_at, created_by)
+            VALUES (3, ?, 'byUserType', CURRENT_TIMESTAMP, ?)
+        """, (root_guid, owner_id))
 
         conn.commit()
         return True, f"Шаблон сцены успешно {action} в локальную библиотеку Varwin XRMS (ID: {template_id}, GUID: {guid})"
