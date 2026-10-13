@@ -339,6 +339,12 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
             self.apply_modifiers = p.apply_modifiers
             self.generate_preview = p.generate_preview
 
+        env_export_dir = os.environ.get("VARWIN_DEFAULT_EXPORT_DIR", "").strip()
+        if env_export_dir:
+            os.makedirs(env_export_dir, exist_ok=True)
+            safe_obj_name = "".join(c for c in (self.object_name_en or "VarwinObject") if c.isalnum() or c in (' ', '_', '-')).strip() or "VarwinObject"
+            self.filepath = os.path.join(env_export_dir, f"{safe_obj_name}.vwo")
+
         return super().invoke(context, event)
 
     def draw(self, context):
@@ -487,6 +493,12 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             self.light_shadows = sp.light_shadows
             self.generate_preview = sp.generate_preview
 
+        env_export_dir = os.environ.get("VARWIN_DEFAULT_EXPORT_DIR", "").strip()
+        if env_export_dir:
+            os.makedirs(env_export_dir, exist_ok=True)
+            safe_scn_name = "".join(c for c in (self.scene_name_en or "SceneTemplate") if c.isalnum() or c in (' ', '_', '-')).strip() or "SceneTemplate"
+            self.filepath = os.path.join(env_export_dir, f"{safe_scn_name}.vwst")
+
         return super().invoke(context, event)
 
     def draw(self, context):
@@ -570,7 +582,10 @@ class OBJECT_OT_varwin_quick_export(bpy.types.Operator):
         name = props.object_name_en or obj.name
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '_', '-')).strip() or "VarwinObject"
 
-        if bpy.data.filepath:
+        env_export_dir = os.environ.get("VARWIN_DEFAULT_EXPORT_DIR", "").strip()
+        if env_export_dir:
+            out_dir = env_export_dir
+        elif bpy.data.filepath:
             out_dir = os.path.join(os.path.dirname(bpy.data.filepath), "Exported_VWO")
         else:
             out_dir = os.path.expanduser("~/Varwin_Exported_VWO")
@@ -610,7 +625,10 @@ class SCENE_OT_varwin_quick_export_vwt(bpy.types.Operator):
         name = props.scene_name_en or "SceneTemplate"
         safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '_', '-')).strip() or "SceneTemplate"
 
-        if bpy.data.filepath:
+        env_export_dir = os.environ.get("VARWIN_DEFAULT_EXPORT_DIR", "").strip()
+        if env_export_dir:
+            out_dir = env_export_dir
+        elif bpy.data.filepath:
             out_dir = os.path.join(os.path.dirname(bpy.data.filepath), "Exported_VWT")
         else:
             out_dir = os.path.expanduser("~/Varwin_Exported_VWT")
