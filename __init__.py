@@ -1,13 +1,32 @@
 bl_info = {
     "name": "Varwin VWO & Scene Exporter",
     "author": "Antigravity & B10Sreg",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Object / Scene | 3D Viewport > Sidebar > Varwin | File > Export",
-    "description": "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwst) в Varwin XRMS со всеми возможностями Unity SDK (Rigidbody, Colliders, VR Interaction, Spawns)",
+    "description": "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwst) в Varwin XRMS со всеми возможностями Unity SDK (текстуры, материалы, Rigidbody, Colliders, VR Interaction, Spawns)",
     "doc_url": "https://varwin.com",
     "category": "Import-Export",
 }
+
+import sys
+import importlib
+
+# Reload submodules dynamically when addon is re-enabled or re-installed in running Blender
+_submodules = [
+    "deps",
+    "mesh_extractor",
+    "preview_generator",
+    "installer",
+    "properties",
+    "vwo_builder",
+    "ui"
+]
+
+for _submod in _submodules:
+    _full_name = f"{__name__}.{_submod}"
+    if _full_name in sys.modules:
+        importlib.reload(sys.modules[_full_name])
 
 import bpy
 from . import properties

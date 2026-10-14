@@ -68,22 +68,31 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_meta.prop(props, "author_name")
     box_meta.prop(props, "license_code")
 
-    # 2. Geometry scope
+    # 2. Geometry & Materials scope
     box_geo = layout.box()
-    box_geo.label(text="2. Геометрия объекта в .vwo", icon='OUTLINER_OB_MESH')
-    box_geo.prop(props, "selected_only")
+    box_geo.label(text="2. Геометрия и материалы в .vwo", icon='OUTLINER_OB_MESH')
+    box_geo.prop(props, "export_scope", text="Область")
 
     selected_count = len([o for o in context.selected_objects if o.type == 'MESH']) if getattr(context, 'selected_objects', None) else 0
     visible_count = len([o for o in context.scene.objects if o.type == 'MESH' and not o.hide_get()]) if getattr(context, 'scene', None) else 0
-    if props.selected_only:
+
+    if props.export_scope == 'SELECTED':
         box_geo.label(text=f"Выделено мешей для сборки: {selected_count}", icon='CHECKMARK' if selected_count > 0 else 'ERROR')
+    elif props.export_scope == 'ACTIVE':
+        box_geo.label(text=f"Экспорт только активного меша: {obj.name}", icon='OBJECT_DATA')
     else:
-        box_geo.label(text=f"Всего видимых мешей в сцене: {visible_count}")
-    box_geo.label(text=f"Опорный объект (Pivot): {obj.name}", icon='PIVOT_CURSOR')
+        box_geo.label(text=f"Всего видимых мешей в сцене: {visible_count}", icon='HIDE_OFF')
+
+    box_geo.label(text=f"Опорная точка (Pivot): {obj.name}", icon='PIVOT_CURSOR')
 
     row_split = box_geo.row(align=True)
     row_split.operator("object.varwin_separate_by_material", text="Разделить по материалам", icon='UNLINKED')
     row_split.operator("object.varwin_join_selected", text="Объединить выделенные", icon='AUTOMERGE_ON')
+
+    box_mat_opt = box_geo.box()
+    box_mat_opt.label(text="Материалы и PBR-текстуры:", icon='MATERIAL')
+    box_mat_opt.prop(props, "embed_textures")
+    box_mat_opt.prop(props, "preserve_materials")
 
     # 3. Physics & Rigidbody
     box_phys = layout.box()
@@ -289,10 +298,29 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
         default=True,
         description="Опционально: зарегистрировать в локальной библиотеке Varwin XRMS"
     )
+    export_scope: bpy.props.EnumProperty(
+        name="Область экспорта",
+        items=[
+            ("SELECTED", "Выделенные меши", "Экспортировать все выделенные меши в единый объект Varwin (или активный, если выделен 1)"),
+            ("ACTIVE", "Только активный меш", "Экспортировать только текущий активный меш"),
+            ("VISIBLE", "Все видимые меши сцены", "Собрать всю видимую геометрию сцены в единый объект"),
+        ],
+        default="SELECTED"
+    )
     selected_only: bpy.props.BoolProperty(
         name="Только выделенные",
-        default=False,
+        default=True,
         description="Экспортировать только выделенные меши в единый объект Varwin (иначе активный меш)"
+    )
+    embed_textures: bpy.props.BoolProperty(
+        name="Внедрять текстуры (PBR)",
+        default=True,
+        description="Автоматически извлекать и упаковывать текстуры материалов (Image Texture) в Unity AssetBundle"
+    )
+    preserve_materials: bpy.props.BoolProperty(
+        name="Защита материалов от оверрайда Varwin",
+        default=True,
+        description="Предотвращает принудительное перекрашивание всей модели в один цвет стандартным контроллером цвета Varwin"
     )
     object_name_ru: bpy.props.StringProperty(name="Название (RU)", default="Объект")
     object_name_en: bpy.props.StringProperty(name="Name (EN)", default="Object")
@@ -342,7 +370,10 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
             p = obj.varwin
             self.target_obj_name = obj.name
             self.direct_install_varwin = p.direct_install_varwin
+            self.export_scope = getattr(p, 'export_scope', 'SELECTED')
             self.selected_only = p.selected_only
+            self.embed_textures = getattr(p, 'embed_textures', True)
+            self.preserve_materials = getattr(p, 'preserve_materials', True)
             self.object_name_ru = p.object_name_ru or obj.name
             self.object_name_en = p.object_name_en or obj.name
             self.use_rigidbody = p.use_rigidbody
@@ -388,8 +419,10 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
         box_meta.prop(self, "object_name_en")
 
         box_geo = layout.box()
-        box_geo.label(text="Геометрия объекта", icon='OUTLINER_OB_MESH')
-        box_geo.prop(self, "selected_only")
+        box_geo.label(text="Геометрия и материалы в .vwo", icon='OUTLINER_OB_MESH')
+        box_geo.prop(self, "export_scope", text="Область")
+        box_geo.prop(self, "embed_textures")
+        box_geo.prop(self, "preserve_materials")
 
         box_phys = layout.box()
         box_phys.label(text="Физика Rigidbody", icon='PHYSICS')
@@ -428,7 +461,10 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
         if hasattr(obj, 'varwin'):
             p = obj.varwin
             p.direct_install_varwin = self.direct_install_varwin
-            p.selected_only = self.selected_only
+            p.export_scope = self.export_scope
+            p.selected_only = (self.export_scope == 'SELECTED')
+            p.embed_textures = self.embed_textures
+            p.preserve_materials = self.preserve_materials
             p.object_name_ru = self.object_name_ru
             p.object_name_en = self.object_name_en
             p.use_rigidbody = self.use_rigidbody
@@ -448,12 +484,20 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
             p.apply_modifiers = self.apply_modifiers
             p.generate_preview = self.generate_preview
 
-        if self.selected_only and context.selected_objects:
-            target_objects = [o for o in context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+        scope = getattr(self, 'export_scope', 'SELECTED')
+        if scope == 'ACTIVE':
+            target_objects = [obj]
+        elif scope == 'VISIBLE':
+            target_objects = [o for o in context.scene.objects if o.type == 'MESH' and not o.hide_get()]
             if not target_objects:
                 target_objects = [obj]
-        else:
-            target_objects = [obj]
+        else:  # SELECTED
+            if context.selected_objects:
+                target_objects = [o for o in context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+                if not target_objects:
+                    target_objects = [obj]
+            else:
+                target_objects = [obj]
 
         try:
             res = build_vwo_package(target_objects, self, self.filepath)
@@ -628,12 +672,20 @@ class OBJECT_OT_varwin_quick_export(bpy.types.Operator):
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, f"{safe_name}.vwo")
 
-        if props.selected_only and context.selected_objects:
-            target_objects = [o for o in context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+        scope = getattr(props, 'export_scope', 'SELECTED')
+        if scope == 'ACTIVE':
+            target_objects = [obj]
+        elif scope == 'VISIBLE':
+            target_objects = [o for o in context.scene.objects if o.type == 'MESH' and not o.hide_get()]
             if not target_objects:
                 target_objects = [obj]
-        else:
-            target_objects = [obj]
+        else:  # SELECTED
+            if context.selected_objects:
+                target_objects = [o for o in context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+                if not target_objects:
+                    target_objects = [obj]
+            else:
+                target_objects = [obj]
 
         try:
             res = build_vwo_package(target_objects, props, out_path)

@@ -1,12 +1,70 @@
+import os
+import io
+import struct
 import bpy
 import bmesh
-import struct
 import mathutils
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+
+def extract_image_texture(img):
+    """
+    Extracts raw RGBA bytes from a Blender bpy.types.Image (packed, filepath, or pixel buffer),
+    flips vertically to match Unity's Cartesian UV coordinate convention, and downscales
+    to max 2048x2048 for Quest 2 VR performance.
+    """
+    if not img or not Image:
+        return None
+
+    try:
+        im = None
+        # 1. Packed image in .blend file
+        if getattr(img, 'packed_file', None) and img.packed_file.data:
+            im = Image.open(io.BytesIO(img.packed_file.data))
+            im = im.convert('RGBA')
+            im = im.transpose(Image.FLIP_TOP_BOTTOM)
+        # 2. Filepath on disk
+        elif img.filepath:
+            disk_path = bpy.path.abspath(img.filepath)
+            if os.path.isfile(disk_path):
+                im = Image.open(disk_path)
+                im = im.convert('RGBA')
+                im = im.transpose(Image.FLIP_TOP_BOTTOM)
+
+        # 3. Fallback: read directly from Blender pixel buffer
+        if im is None and img.size[0] > 0 and img.size[1] > 0:
+            w, h = img.size[0], img.size[1]
+            raw_floats = list(img.pixels)
+            if len(raw_floats) == w * h * 4:
+                b_data = bytes(int(max(0.0, min(1.0, c)) * 255) for c in raw_floats)
+                im = Image.frombytes('RGBA', (w, h), b_data)
+
+        if im is None:
+            return None
+
+        # Optimization for VR Quest 2: clamp max resolution to 2048x2048
+        if max(im.width, im.height) > 2048:
+            im.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+
+        return {
+            'name': img.name,
+            'width': im.width,
+            'height': im.height,
+            'raw_rgba': im.tobytes()
+        }
+    except Exception as e:
+        print(f"Warning: Failed to extract texture from image '{getattr(img, 'name', 'unknown')}': {e}")
+        return None
+
 
 def extract_material_properties(mat):
     """
-    Extracts PBR properties (Base Color, Metallic, Roughness, Glossiness, Emission)
-    from a Blender Material (Principled BSDF or basic diffuse).
+    Extracts PBR properties (Base Color, Metallic, Roughness, Glossiness, Emission,
+    and diffuse Image Texture) from a Blender Material.
     """
     if not mat:
         return {
@@ -15,13 +73,15 @@ def extract_material_properties(mat):
             'metallic': 0.0,
             'roughness': 0.5,
             'glossiness': 0.5,
-            'emission': (0.0, 0.0, 0.0, 1.0)
+            'emission': (0.0, 0.0, 0.0, 1.0),
+            'texture': None
         }
 
     base_color = (0.8, 0.8, 0.8, 1.0)
     metallic = 0.0
     roughness = 0.5
     emission = (0.0, 0.0, 0.0, 1.0)
+    texture = None
 
     if mat.use_nodes and mat.node_tree:
         for node in mat.node_tree.nodes:
@@ -33,15 +93,9 @@ def extract_material_properties(mat):
                         if from_node and from_node.type == 'RGB':
                             base_color = tuple(float(c) for c in from_node.outputs[0].default_value[:4])
                         elif from_node and from_node.type == 'TEX_IMAGE' and getattr(from_node, 'image', None):
-                            try:
-                                img = from_node.image
-                                if img.pixels and len(img.pixels) >= 4:
-                                    mid = (len(img.pixels) // 4 // 2) * 4
-                                    base_color = (float(img.pixels[mid]), float(img.pixels[mid+1]), float(img.pixels[mid+2]), 1.0)
-                                else:
-                                    base_color = tuple(float(c) for c in mat.diffuse_color[:4])
-                            except Exception:
-                                base_color = tuple(float(c) for c in mat.diffuse_color[:4])
+                            texture = extract_image_texture(from_node.image)
+                            # When texture is present, use pure neutral white (1,1,1,1) tint so texture colors shine naturally
+                            base_color = (1.0, 1.0, 1.0, 1.0)
                         else:
                             base_color = tuple(float(c) for c in mat.diffuse_color[:4])
                     else:
@@ -73,7 +127,8 @@ def extract_material_properties(mat):
         'metallic': max(0.0, min(1.0, metallic)),
         'roughness': max(0.0, min(1.0, roughness)),
         'glossiness': max(0.0, min(1.0, 1.0 - roughness)),
-        'emission': emission
+        'emission': emission,
+        'texture': texture
     }
 
 

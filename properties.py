@@ -281,11 +281,31 @@ class VarwinObjectProperties(bpy.types.PropertyGroup):
         description="Поверхность, на которую игрок может свободно телепортироваться"
     )
 
-    # Export & Installation
+    # Export & Installation Scope
+    export_scope: bpy.props.EnumProperty(
+        name="Область экспорта",
+        items=[
+            ("SELECTED", "Выделенные меши", "Экспортировать все выделенные меши в единый объект Varwin (или активный, если выделен 1)", "RESTRICT_SELECT_OFF", 0),
+            ("ACTIVE", "Только активный меш", "Экспортировать только текущий активный меш", "OBJECT_DATA", 1),
+            ("VISIBLE", "Все видимые меши сцены", "Собрать всю видимую геометрию сцены в единый объект Varwin", "HIDE_OFF", 2),
+        ],
+        default="SELECTED",
+        description="Выбор полигональных объектов для сборки в объект Varwin (.vwo)"
+    )
     selected_only: bpy.props.BoolProperty(
         name="Только выделенные",
-        default=False,
+        default=True,
         description="Экспортировать только выделенные меши в единый объект Varwin (иначе активный меш)"
+    )
+    embed_textures: bpy.props.BoolProperty(
+        name="Внедрять текстуры (PBR)",
+        default=True,
+        description="Автоматически извлекать и упаковывать текстуры материалов (Image Texture) в Unity AssetBundle"
+    )
+    preserve_materials: bpy.props.BoolProperty(
+        name="Защита материалов от оверрайда Varwin",
+        default=True,
+        description="Предотвращает принудительное перекрашивание всей модели в один цвет стандартным контроллером цвета Varwin"
     )
     apply_modifiers: bpy.props.BoolProperty(
         name="Применить модификаторы",
@@ -396,6 +416,11 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     )
 
     # Export & Installation
+    embed_textures: bpy.props.BoolProperty(
+        name="Внедрять текстуры (PBR)",
+        default=True,
+        description="Автоматически извлекать и упаковывать текстуры материалов сцены в Unity AssetBundle"
+    )
     generate_preview: bpy.props.BoolProperty(
         name="Рендерить превью",
         default=True,

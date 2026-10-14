@@ -72,15 +72,19 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
             root_obj = mesh_objs[0]
     else:
         root_obj = obj_or_objects
-        selected_only = getattr(props, 'selected_only', False)
-        if selected_only and bpy.context and bpy.context.selected_objects:
-            mesh_objs = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()]
-            if not mesh_objs:
-                mesh_objs = [root_obj]
-            if root_obj not in mesh_objs and mesh_objs:
-                root_obj = mesh_objs[0]
-        else:
+        scope = getattr(props, 'export_scope', None)
+        if scope == 'ACTIVE':
             mesh_objs = [root_obj]
+        elif scope == 'VISIBLE':
+            mesh_objs = [o for o in bpy.context.scene.objects if o.type == 'MESH' and not o.hide_get()] if (bpy.context and bpy.context.scene) else [root_obj]
+        else:  # 'SELECTED' (default) or legacy selected_only
+            sel_meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()] if (bpy.context and getattr(bpy.context, 'selected_objects', None)) else []
+            if sel_meshes:
+                mesh_objs = sel_meshes
+                if root_obj not in mesh_objs:
+                    root_obj = mesh_objs[0]
+            else:
+                mesh_objs = [root_obj]
 
     if not mesh_objs:
         raise ValueError("Не найдено полигональных мешей (Mesh) для экспорта в объект .vwo!")
@@ -238,29 +242,58 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     tree['m_Name'] = safe_asset_name
                     o.save_typetree(tree)
 
-        # C. In-place patch Materials and MeshRenderer
+        # C. In-place patch Materials, Textures, and MeshRenderer
         base_mat_obj = None
         orig_mat_pid = None
         target_sf = None
+        tex_tpl = None
         for bf in env.files.values():
             if hasattr(bf, 'files'):
                 for sf in bf.files.values():
                     if hasattr(sf, 'objects'):
                         for pid, o in sf.objects.items():
-                            if o.type.name == 'Material':
+                            if o.type.name == 'Material' and not base_mat_obj:
                                 base_mat_obj = o
                                 orig_mat_pid = pid
                                 target_sf = sf
-                                break
-                    if base_mat_obj:
+                            elif o.type.name == 'Texture2D' and not tex_tpl:
+                                tex_tpl = o
+                    if base_mat_obj and tex_tpl:
                         break
-            if base_mat_obj:
+            if base_mat_obj and tex_tpl:
                 break
 
         mat_pids = []
+        tex_pids = []
         if base_mat_obj and target_sf:
             extracted_mats = mesh_info.get('materials', [])
+            embed_tex = getattr(props, 'embed_textures', True)
+            preserve = getattr(props, 'preserve_materials', True)
+            has_multiple_or_textures = (len(extracted_mats) > 1 or any(m.get('texture') for m in extracted_mats))
+
             for i, m_info in enumerate(extracted_mats):
+                # C.0. Inject Texture2D if material has an Image Texture
+                tex_pid = None
+                tex_data = m_info.get('texture')
+                if embed_tex and tex_data and tex_tpl:
+                    new_tex = copy.copy(tex_tpl)
+                    tex_pid = orig_mat_pid - 50000 - i * 10
+                    new_tex.path_id = tex_pid
+                    t_tree = new_tex.read_typetree()
+                    t_tree['m_Name'] = f"{m_info.get('name', f'Mat_{i}')}_MainTex"
+                    t_tree['m_Width'] = tex_data['width']
+                    t_tree['m_Height'] = tex_data['height']
+                    t_tree['m_CompleteImageSize'] = tex_data['width'] * tex_data['height'] * 4
+                    t_tree['m_TextureFormat'] = 4  # RGBA32 uncompressed standard
+                    t_tree['m_MipCount'] = 1
+                    t_tree['m_IsReadable'] = True
+                    t_tree['image data'] = tex_data['raw_rgba']
+                    t_tree['m_StreamData'] = {'offset': 0, 'size': 0, 'path': ''}
+                    new_tex.save_typetree(t_tree)
+                    target_sf.objects[tex_pid] = new_tex
+                    tex_pids.append(tex_pid)
+
+                # C.0b. Clone or configure Material
                 if i == 0:
                     m_obj = base_mat_obj
                     m_pid = orig_mat_pid
@@ -273,6 +306,20 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 tree = m_obj.read_typetree()
                 tree['m_Name'] = m_info.get('name', f'Material_{i}')
                 col = m_info.get('color', (0.8, 0.8, 0.8, 1.0))
+                ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
+
+                # Protect against Varwin's VisualizationBehaviour overriding all materials:
+                # Varwin's VisualizationBehaviourHelper.CanAddBehaviour checks:
+                # `materials.All(m => m.color == firstColor)`
+                # If all materials have the exact same color, Varwin attaches VisualizationBehaviour,
+                # which forces _mainColor across ALL submeshes via MaterialPropertyBlock!
+                # By applying an imperceptible delta (0.002) to each material's color,
+                # CanAddBehaviour returns False, cleanly disabling VisualizationBehaviour
+                # and preserving every submesh's individual materials and textures untouched!
+                if preserve and has_multiple_or_textures:
+                    delta = 0.002 * (i % 7 + 1)
+                    col = (col[0], max(0.0, col[1] - delta), col[2], col[3] if len(col) > 3 else 1.0)
+
                 for c in tree.get('m_SavedProperties', {}).get('m_Colors', []):
                     if c[0] == '_Color':
                         c[1]['r'] = float(col[0])
@@ -280,11 +327,16 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                         c[1]['b'] = float(col[2])
                         c[1]['a'] = float(col[3]) if len(col) > 3 else 1.0
                     elif c[0] == '_EmissionColor':
-                        ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
                         c[1]['r'] = float(ecol[0])
                         c[1]['g'] = float(ecol[1])
                         c[1]['b'] = float(ecol[2])
                         c[1]['a'] = 1.0
+
+                # Link Texture2D to _MainTex
+                if tex_pid:
+                    for t_env in tree.get('m_SavedProperties', {}).get('m_TexEnvs', []):
+                        if t_env[0] == '_MainTex':
+                            t_env[1]['m_Texture'] = {'m_FileID': 0, 'm_PathID': tex_pid}
 
                 is_emissive = max(ecol[0], ecol[1], ecol[2]) > 0.01
                 if is_emissive:
@@ -348,14 +400,14 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     o.save_typetree(tree)
                     break
 
-            # C.2b. Register all cloned materials in AssetBundle m_PreloadTable and update container preloadSize
-            # This ensures Unity preloads all material slots when instantiating the prefab, preventing fallbacks to slot 0
+            # C.2b. Register all cloned materials and textures in AssetBundle m_PreloadTable and update container preloadSize
+            # This ensures Unity preloads all material slots and textures when instantiating the prefab, preventing fallbacks to slot 0
             for o in env.objects:
                 if o.type.name == 'AssetBundle':
                     tree = o.read_typetree()
                     preload_table = tree.get('m_PreloadTable', [])
                     existing_pids = {entry.get('m_PathID') for entry in preload_table}
-                    for pid in mat_pids:
+                    for pid in mat_pids + tex_pids:
                         if pid not in existing_pids:
                             preload_table.append({'m_FileID': 0, 'm_PathID': pid})
                     tree['m_PreloadTable'] = preload_table
@@ -699,7 +751,34 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
         vwt_mat_pids = []
         if base_mat_obj and shared_sf:
             extracted_mats = mesh_info.get('materials', [])
+            embed_tex = getattr(scene_props, 'embed_textures', True)
+            tex_tpl = shared_sf.objects.get(29)
+            if not tex_tpl:
+                for o in shared_sf.objects.values():
+                    if o.type.name == 'Texture2D':
+                        tex_tpl = o
+                        break
+
             for i, m_info in enumerate(extracted_mats):
+                tex_pid = None
+                tex_data = m_info.get('texture')
+                if embed_tex and tex_data and tex_tpl:
+                    new_tex = copy.copy(tex_tpl)
+                    tex_pid = 2900 + i
+                    new_tex.path_id = tex_pid
+                    t_tree = new_tex.read_typetree()
+                    t_tree['m_Name'] = f"{m_info.get('name', f'SceneMat_{i}')}_MainTex"
+                    t_tree['m_Width'] = tex_data['width']
+                    t_tree['m_Height'] = tex_data['height']
+                    t_tree['m_CompleteImageSize'] = tex_data['width'] * tex_data['height'] * 4
+                    t_tree['m_TextureFormat'] = 4  # RGBA32
+                    t_tree['m_MipCount'] = 1
+                    t_tree['m_IsReadable'] = True
+                    t_tree['image data'] = tex_data['raw_rgba']
+                    t_tree['m_StreamData'] = {'offset': 0, 'size': 0, 'path': ''}
+                    new_tex.save_typetree(t_tree)
+                    shared_sf.objects[tex_pid] = new_tex
+
                 if i == 0:
                     m_obj = base_mat_obj
                     m_pid = 25
@@ -734,6 +813,12 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                         '_EmissionColor',
                         {'r': float(ecol[0]), 'g': float(ecol[1]), 'b': float(ecol[2]), 'a': 1.0}
                     ))
+
+                # Link Texture2D to _MainTex
+                if tex_pid:
+                    for t_env in tree.get('m_SavedProperties', {}).get('m_TexEnvs', []):
+                        if t_env[0] == '_MainTex':
+                            t_env[1]['m_Texture'] = {'m_FileID': 1, 'm_PathID': tex_pid}
 
                 if is_emissive:
                     if 'm_ValidKeywords' in tree:
