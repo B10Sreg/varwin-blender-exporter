@@ -26,8 +26,27 @@ def extract_material_properties(mat):
     if mat.use_nodes and mat.node_tree:
         for node in mat.node_tree.nodes:
             if node.type == 'BSDF_PRINCIPLED':
-                if 'Base Color' in node.inputs:
-                    base_color = tuple(float(c) for c in node.inputs['Base Color'].default_value[:4])
+                base_color_input = node.inputs.get('Base Color')
+                if base_color_input:
+                    if base_color_input.is_linked and base_color_input.links:
+                        from_node = base_color_input.links[0].from_node
+                        if from_node and from_node.type == 'RGB':
+                            base_color = tuple(float(c) for c in from_node.outputs[0].default_value[:4])
+                        elif from_node and from_node.type == 'TEX_IMAGE' and getattr(from_node, 'image', None):
+                            try:
+                                img = from_node.image
+                                if img.pixels and len(img.pixels) >= 4:
+                                    mid = (len(img.pixels) // 4 // 2) * 4
+                                    base_color = (float(img.pixels[mid]), float(img.pixels[mid+1]), float(img.pixels[mid+2]), 1.0)
+                                else:
+                                    base_color = tuple(float(c) for c in mat.diffuse_color[:4])
+                            except Exception:
+                                base_color = tuple(float(c) for c in mat.diffuse_color[:4])
+                        else:
+                            base_color = tuple(float(c) for c in mat.diffuse_color[:4])
+                    else:
+                        base_color = tuple(float(c) for c in base_color_input.default_value[:4])
+
                 if 'Metallic' in node.inputs:
                     metallic = float(node.inputs['Metallic'].default_value)
                 if 'Roughness' in node.inputs:
@@ -58,85 +77,90 @@ def extract_material_properties(mat):
     }
 
 
-def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
+def extract_object_geometry(objects, root_obj=None, apply_modifiers: bool = True):
     """
-    Evaluates, triangulates, extracts vertex/index buffers and per-material submeshes
-    from Blender object ready for direct injection into UnityFS AssetBundle.
+    Extracts and merges geometry from one or multiple Blender mesh objects
+    in root_obj's local coordinate space, preserving materials and submeshes
+    for Varwin Object (.vwo) export.
     """
-    if obj.type != 'MESH':
-        raise ValueError(f"Объект '{obj.name}' не является полигональным мешем (тип: {obj.type})")
+    if isinstance(objects, bpy.types.Object):
+        objects = [objects]
 
-    # Evaluate with modifiers
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    eval_obj = obj.evaluated_get(depsgraph) if apply_modifiers else obj
-    mesh = eval_obj.to_mesh()
+    mesh_objs = [o for o in objects if o and o.type == 'MESH']
+    if not mesh_objs:
+        raise ValueError("Не найдено полигональных мешей (Mesh) для экспорта объекта!")
 
-    # Triangulate via bmesh
-    bm = bmesh.new()
-    bm.from_mesh(mesh)
-    bmesh.ops.triangulate(bm, faces=bm.faces[:])
-    bm.to_mesh(mesh)
-    bm.free()
+    if not root_obj or root_obj not in mesh_objs:
+        root_obj = mesh_objs[0]
 
-    mesh.calc_loop_triangles()
-
-    has_uv = bool(mesh.uv_layers.active)
-    uv_data = mesh.uv_layers.active.data if has_uv else None
-
-    # Collect materials info
-    materials = []
-    if obj.material_slots:
-        for slot in obj.material_slots:
-            materials.append(extract_material_properties(slot.material))
-    if not materials:
-        materials.append(extract_material_properties(None))
-
-    num_materials = len(materials)
-
-    # Group loop_triangles by material_index
-    triangles_by_mat = {i: [] for i in range(num_materials)}
-    for tri in mesh.loop_triangles:
-        poly = mesh.polygons[tri.polygon_index]
-        m_idx = poly.material_index if 0 <= poly.material_index < num_materials else 0
-        triangles_by_mat[m_idx].append(tri)
+    depsgraph = bpy.context.evaluated_depsgraph_get() if bpy.context else None
+    inv_root_world = root_obj.matrix_world.inverted()
 
     vertices_data = []
-    submesh_indices_list = []
     vert_map = {}
+    material_map = {}
+    ordered_materials = []
 
     min_x, max_x = float('inf'), float('-inf')
     min_y, max_y = float('inf'), float('-inf')
     min_z, max_z = float('inf'), float('-inf')
 
-    submesh_aabbs = []
-    active_materials = []
+    for obj in mesh_objs:
+        eval_obj = obj.evaluated_get(depsgraph) if (apply_modifiers and depsgraph) else obj
+        mesh = eval_obj.to_mesh()
 
-    for m_idx in range(num_materials):
-        tris = triangles_by_mat[m_idx]
-        if not tris:
-            continue
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        bm.to_mesh(mesh)
+        bm.free()
 
-        active_materials.append(materials[m_idx])
-        sub_indices = []
-        s_min_x, s_max_x = float('inf'), float('-inf')
-        s_min_y, s_max_y = float('inf'), float('-inf')
-        s_min_z, s_max_z = float('inf'), float('-inf')
+        mesh.calc_loop_triangles()
 
-        for tri in tris:
-            # Unity left-handed: flip winding order (0, 2, 1)
+        # Relative transform to root_obj
+        rel_mat = inv_root_world @ obj.matrix_world
+        norm_mat = rel_mat.to_3x3().inverted().transposed()
+
+        has_uv = bool(mesh.uv_layers.active)
+        uv_data = mesh.uv_layers.active.data if has_uv else None
+
+        obj_materials = []
+        if obj.material_slots:
+            for slot in obj.material_slots:
+                obj_materials.append(extract_material_properties(slot.material))
+        if not obj_materials:
+            obj_materials.append(extract_material_properties(None))
+
+        for tri in mesh.loop_triangles:
+            poly = mesh.polygons[tri.polygon_index]
+            slot_idx = poly.material_index if 0 <= poly.material_index < len(obj_materials) else 0
+            mat_props = obj_materials[slot_idx]
+            mat_key = mat_props['name']
+
+            if mat_key not in material_map:
+                material_map[mat_key] = {
+                    'props': mat_props,
+                    'indices': [],
+                    'bounds': [float('inf'), float('-inf'), float('inf'), float('-inf'), float('inf'), float('-inf')]
+                }
+                ordered_materials.append(mat_key)
+
+            entry = material_map[mat_key]
+
             for loop_idx in (tri.loops[0], tri.loops[2], tri.loops[1]):
                 loop = mesh.loops[loop_idx]
                 v = mesh.vertices[loop.vertex_index]
 
-                # Coordinate conversion: Blender (x, y, z) -> Unity (x, z, y)
-                px = float(v.co.x)
-                py = float(v.co.z)
-                pz = float(v.co.y)
+                p_rel = rel_mat @ v.co
+                px = float(p_rel.x)
+                py = float(p_rel.z)
+                pz = float(p_rel.y)
 
-                norm = loop.normal
-                nx = float(norm.x)
-                ny = float(norm.z)
-                nz = float(norm.y)
+                n_rel = norm_mat @ loop.normal
+                n_rel.normalize()
+                nx = float(n_rel.x)
+                ny = float(n_rel.z)
+                nz = float(n_rel.y)
 
                 if has_uv:
                     u = float(uv_data[loop_idx].uv[0])
@@ -151,12 +175,13 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
                 min_z = min(min_z, pz)
                 max_z = max(max_z, pz)
 
-                s_min_x = min(s_min_x, px)
-                s_max_x = max(s_max_x, px)
-                s_min_y = min(s_min_y, py)
-                s_max_y = max(s_max_y, py)
-                s_min_z = min(s_min_z, pz)
-                s_max_z = max(s_max_z, pz)
+                b = entry['bounds']
+                b[0] = min(b[0], px)
+                b[1] = max(b[1], px)
+                b[2] = min(b[2], py)
+                b[3] = max(b[3], py)
+                b[4] = min(b[4], pz)
+                b[5] = max(b[5], pz)
 
                 key = (
                     round(px, 5), round(py, 5), round(pz, 5),
@@ -167,31 +192,20 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
                 if key not in vert_map:
                     new_idx = len(vertices_data)
                     vert_map[key] = new_idx
-                    # Standard 48-byte vertex layout
                     v_bytes = struct.pack(
                         '<3f3f4f2f',
                         px, py, pz,
                         nx, ny, nz,
-                        1.0, 0.0, 0.0, 1.0,  # Tangent
-                        u, v_coord            # UV
+                        1.0, 0.0, 0.0, 1.0,
+                        u, v_coord
                     )
                     vertices_data.append(v_bytes)
-                    sub_indices.append(new_idx)
+                    entry['indices'].append(new_idx)
                 else:
-                    sub_indices.append(vert_map[key])
+                    entry['indices'].append(vert_map[key])
 
-        submesh_indices_list.append(sub_indices)
-        sub_cx = (s_min_x + s_max_x) * 0.5
-        sub_cy = (s_min_y + s_max_y) * 0.5
-        sub_cz = (s_min_z + s_max_z) * 0.5
-        sub_ex = max(0.001, (s_max_x - s_min_x) * 0.5)
-        sub_ey = max(0.001, (s_max_y - s_min_y) * 0.5)
-        sub_ez = max(0.001, (s_max_z - s_min_z) * 0.5)
-        submesh_aabbs.append((sub_cx, sub_cy, sub_cz, sub_ex, sub_ey, sub_ez))
-
-    # Free evaluated mesh
-    if apply_modifiers:
-        eval_obj.to_mesh_clear()
+        if apply_modifiers and depsgraph:
+            eval_obj.to_mesh_clear()
 
     if not vertices_data:
         min_x = max_x = min_y = max_y = min_z = max_z = 0.0
@@ -209,14 +223,27 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
     all_raw_ib = []
     submesh_descriptors = []
     byte_offset = 0
+    final_materials = []
 
-    for i, sub_idxs in enumerate(submesh_indices_list):
+    for mat_key in ordered_materials:
+        entry = material_map[mat_key]
+        sub_idxs = entry['indices']
+        if not sub_idxs:
+            continue
+
         raw_sub = struct.pack(f'<{len(sub_idxs)}{fmt_char}', *sub_idxs)
         all_raw_ib.append(raw_sub)
 
-        first_v = min(sub_idxs) if sub_idxs else 0
-        v_count = (max(sub_idxs) - first_v + 1) if sub_idxs else 0
-        aabb = submesh_aabbs[i]
+        b = entry['bounds']
+        s_cx = (b[0] + b[1]) * 0.5
+        s_cy = (b[2] + b[3]) * 0.5
+        s_cz = (b[4] + b[5]) * 0.5
+        s_ex = max(0.001, (b[1] - b[0]) * 0.5)
+        s_ey = max(0.001, (b[3] - b[2]) * 0.5)
+        s_ez = max(0.001, (b[5] - b[4]) * 0.5)
+
+        first_v = min(sub_idxs)
+        v_count = max(sub_idxs) - first_v + 1
 
         submesh_descriptors.append({
             'firstByte': byte_offset,
@@ -226,13 +253,14 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
             'firstVertex': first_v,
             'vertexCount': v_count,
             'localAABB': {
-                'm_Center': {'x': aabb[0], 'y': aabb[1], 'z': aabb[2]},
-                'm_Extent': {'x': aabb[3], 'y': aabb[4], 'z': aabb[5]}
+                'm_Center': {'x': s_cx, 'y': s_cy, 'z': s_cz},
+                'm_Extent': {'x': s_ex, 'y': s_ey, 'z': s_ez}
             }
         })
         byte_offset += len(raw_sub)
+        final_materials.append(entry['props'])
 
-    total_index_count = sum(len(s) for s in submesh_indices_list)
+    total_index_count = sum(len(material_map[k]['indices']) for k in ordered_materials)
 
     return {
         'vertex_count': len(vertices_data),
@@ -242,12 +270,20 @@ def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
         'index_format': 1 if use_32bit else 0,
         'index_count': total_index_count,
         'submeshes': submesh_descriptors,
-        'materials': active_materials if active_materials else materials,
+        'materials': final_materials if final_materials else [extract_material_properties(None)],
         'aabb_center': {'x': cx, 'y': cy, 'z': cz},
         'aabb_extent': {'x': ex, 'y': ey, 'z': ez},
         'dimensions': {'x': ex * 2.0, 'y': ey * 2.0, 'z': ez * 2.0},
         'radius': (ex**2 + ey**2 + ez**2)**0.5
     }
+
+
+def extract_mesh_data(obj: bpy.types.Object, apply_modifiers: bool = True):
+    """
+    Evaluates, triangulates, extracts vertex/index buffers and per-material submeshes
+    from a single Blender object.
+    """
+    return extract_object_geometry([obj], root_obj=obj, apply_modifiers=apply_modifiers)
 
 
 def _pack_triangles(triangles_list):

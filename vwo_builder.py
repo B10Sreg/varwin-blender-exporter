@@ -14,7 +14,7 @@ except ImportError:
     UnityPy = None
 import copy
 
-from .mesh_extractor import extract_mesh_data, extract_scene_geometry
+from .mesh_extractor import extract_mesh_data, extract_object_geometry, extract_scene_geometry
 from .preview_generator import generate_preview_images
 from .installer import install_vwo_to_varwin, install_scene_template_to_varwin
 
@@ -44,9 +44,9 @@ UNITY_48B_CHANNELS = [
 ]
 
 
-def build_vwo_package(obj, props, output_filepath: str):
+def build_vwo_package(obj_or_objects, props, output_filepath: str):
     """
-    Main pipeline: extracts mesh, patches Unity AssetBundles, generates metadata,
+    Main pipeline: extracts mesh(es), patches Unity AssetBundles, generates metadata,
     packs into standalone .vwo archive, and optionally installs into local Varwin.
     """
     global UnityPy
@@ -61,6 +61,31 @@ def build_vwo_package(obj, props, output_filepath: str):
 
     addon_dir = os.path.dirname(os.path.abspath(__file__))
     templates_dir = os.path.join(addon_dir, "templates")
+
+    # Resolve target mesh objects and reference/pivot object
+    if isinstance(obj_or_objects, (list, tuple)):
+        mesh_objs = [o for o in obj_or_objects if o and o.type == 'MESH']
+        root_obj = None
+        if bpy.context and bpy.context.active_object in mesh_objs:
+            root_obj = bpy.context.active_object
+        elif mesh_objs:
+            root_obj = mesh_objs[0]
+    else:
+        root_obj = obj_or_objects
+        selected_only = getattr(props, 'selected_only', False)
+        if selected_only and bpy.context and bpy.context.selected_objects:
+            mesh_objs = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+            if not mesh_objs:
+                mesh_objs = [root_obj]
+            if root_obj not in mesh_objs and mesh_objs:
+                root_obj = mesh_objs[0]
+        else:
+            mesh_objs = [root_obj]
+
+    if not mesh_objs:
+        raise ValueError("Не найдено полигональных мешей (Mesh) для экспорта в объект .vwo!")
+
+    obj = root_obj
 
     # Select base template according to chosen collider
     collider_type = getattr(props, 'collider_type', 'CONVEX')
@@ -77,8 +102,12 @@ def build_vwo_package(obj, props, output_filepath: str):
     if not os.path.isfile(template_path):
         raise FileNotFoundError(f"Шаблонный файл {template_name} не найден в {templates_dir}")
 
-    # 1. Extract geometry and binary buffers from Blender object
-    mesh_info = extract_mesh_data(obj, apply_modifiers=getattr(props, 'apply_modifiers', True))
+    # 1. Extract geometry and binary buffers from Blender object(s)
+    mesh_info = extract_object_geometry(
+        mesh_objs,
+        root_obj=root_obj,
+        apply_modifiers=getattr(props, 'apply_modifiers', True)
+    )
 
     # 2. Extract template package contents
     template_files = {}
@@ -316,6 +345,27 @@ def build_vwo_package(obj, props, output_filepath: str):
                 if o.type.name == 'MeshRenderer':
                     tree = o.read_typetree()
                     tree['m_Materials'] = [{'m_FileID': 0, 'm_PathID': pid} for pid in mat_pids]
+                    o.save_typetree(tree)
+                    break
+
+            # C.2b. Register all cloned materials in AssetBundle m_PreloadTable and update container preloadSize
+            # This ensures Unity preloads all material slots when instantiating the prefab, preventing fallbacks to slot 0
+            for o in env.objects:
+                if o.type.name == 'AssetBundle':
+                    tree = o.read_typetree()
+                    preload_table = tree.get('m_PreloadTable', [])
+                    existing_pids = {entry.get('m_PathID') for entry in preload_table}
+                    for pid in mat_pids:
+                        if pid not in existing_pids:
+                            preload_table.append({'m_FileID': 0, 'm_PathID': pid})
+                    tree['m_PreloadTable'] = preload_table
+
+                    total_preloads = len(preload_table)
+                    new_container = []
+                    for path, info in tree.get('m_Container', []):
+                        info['preloadSize'] = total_preloads
+                        new_container.append((path, info))
+                    tree['m_Container'] = new_container
                     o.save_typetree(tree)
                     break
 

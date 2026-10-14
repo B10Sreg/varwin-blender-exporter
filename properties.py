@@ -282,6 +282,11 @@ class VarwinObjectProperties(bpy.types.PropertyGroup):
     )
 
     # Export & Installation
+    selected_only: bpy.props.BoolProperty(
+        name="Только выделенные",
+        default=False,
+        description="Экспортировать только выделенные меши в единый объект Varwin (иначе активный меш)"
+    )
     apply_modifiers: bpy.props.BoolProperty(
         name="Применить модификаторы",
         default=True,

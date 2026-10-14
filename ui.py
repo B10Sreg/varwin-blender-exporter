@@ -68,9 +68,26 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_meta.prop(props, "author_name")
     box_meta.prop(props, "license_code")
 
-    # 2. Physics & Rigidbody
+    # 2. Geometry scope
+    box_geo = layout.box()
+    box_geo.label(text="2. Геометрия объекта в .vwo", icon='OUTLINER_OB_MESH')
+    box_geo.prop(props, "selected_only")
+
+    selected_count = len([o for o in context.selected_objects if o.type == 'MESH']) if getattr(context, 'selected_objects', None) else 0
+    visible_count = len([o for o in context.scene.objects if o.type == 'MESH' and not o.hide_get()]) if getattr(context, 'scene', None) else 0
+    if props.selected_only:
+        box_geo.label(text=f"Выделено мешей для сборки: {selected_count}", icon='CHECKMARK' if selected_count > 0 else 'ERROR')
+    else:
+        box_geo.label(text=f"Всего видимых мешей в сцене: {visible_count}")
+    box_geo.label(text=f"Опорный объект (Pivot): {obj.name}", icon='PIVOT_CURSOR')
+
+    row_split = box_geo.row(align=True)
+    row_split.operator("object.varwin_separate_by_material", text="Разделить по материалам", icon='UNLINKED')
+    row_split.operator("object.varwin_join_selected", text="Объединить выделенные", icon='AUTOMERGE_ON')
+
+    # 3. Physics & Rigidbody
     box_phys = layout.box()
-    box_phys.label(text="2. Физика Rigidbody (PhysX)", icon='PHYSICS')
+    box_phys.label(text="3. Физика Rigidbody (PhysX)", icon='PHYSICS')
     box_phys.prop(props, "use_rigidbody")
 
     if props.use_rigidbody:
@@ -109,9 +126,9 @@ def draw_varwin_object_ui(layout, context, obj, props):
         r_rot.prop(props, "freeze_rot_y", toggle=True)
         r_rot.prop(props, "freeze_rot_z", toggle=True)
 
-    # 3. Collider Settings
+    # 4. Collider Settings
     box_col = layout.box()
-    box_col.label(text="3. Форма Коллайдера", icon='MOD_BEVEL')
+    box_col.label(text="4. Форма Коллайдера", icon='MOD_BEVEL')
     box_col.prop(props, "collider_type")
     box_col.prop(props, "is_trigger")
 
@@ -130,16 +147,16 @@ def draw_varwin_object_ui(layout, context, obj, props):
                 box_col.prop(props, "capsule_direction")
                 box_col.prop(props, "capsule_center")
 
-    # 4. VR Interaction Flags (Varwin Unity SDK)
+    # 5. VR Interaction Flags (Varwin Unity SDK)
     box_vr = layout.box()
-    box_vr.label(text="4. Взаимодействие в VR (Varwin SDK)", icon='HAND')
+    box_vr.label(text="5. Взаимодействие в VR (Varwin SDK)", icon='HAND')
     box_vr.prop(props, "grabbable")
     box_vr.prop(props, "touchable")
     box_vr.prop(props, "usable")
     box_vr.prop(props, "is_obstacle")
     box_vr.prop(props, "teleport_area")
 
-    # 5. Quick Presets
+    # 6. Quick Presets
     box_presets = layout.box()
     box_presets.label(text="Пресеты физики:", icon='PRESET')
     row_p1 = box_presets.row(align=True)
@@ -158,7 +175,7 @@ def draw_varwin_object_ui(layout, context, obj, props):
     op5 = row_p3.operator("object.varwin_apply_preset", text="Площадка телепорта")
     op5.preset = 'TELEPORT_FLOOR'
 
-    # 6. Export Options
+    # 7. Export Options
     layout.separator()
     box_exp = layout.box()
     box_exp.label(text="Сборка и экспорт", icon='EXPORT')
@@ -272,6 +289,11 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
         default=True,
         description="Опционально: зарегистрировать в локальной библиотеке Varwin XRMS"
     )
+    selected_only: bpy.props.BoolProperty(
+        name="Только выделенные",
+        default=False,
+        description="Экспортировать только выделенные меши в единый объект Varwin (иначе активный меш)"
+    )
     object_name_ru: bpy.props.StringProperty(name="Название (RU)", default="Объект")
     object_name_en: bpy.props.StringProperty(name="Name (EN)", default="Object")
 
@@ -320,6 +342,7 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
             p = obj.varwin
             self.target_obj_name = obj.name
             self.direct_install_varwin = p.direct_install_varwin
+            self.selected_only = p.selected_only
             self.object_name_ru = p.object_name_ru or obj.name
             self.object_name_en = p.object_name_en or obj.name
             self.use_rigidbody = p.use_rigidbody
@@ -364,6 +387,10 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
         box_meta.prop(self, "object_name_ru")
         box_meta.prop(self, "object_name_en")
 
+        box_geo = layout.box()
+        box_geo.label(text="Геометрия объекта", icon='OUTLINER_OB_MESH')
+        box_geo.prop(self, "selected_only")
+
         box_phys = layout.box()
         box_phys.label(text="Физика Rigidbody", icon='PHYSICS')
         box_phys.prop(self, "use_rigidbody")
@@ -401,6 +428,7 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
         if hasattr(obj, 'varwin'):
             p = obj.varwin
             p.direct_install_varwin = self.direct_install_varwin
+            p.selected_only = self.selected_only
             p.object_name_ru = self.object_name_ru
             p.object_name_en = self.object_name_en
             p.use_rigidbody = self.use_rigidbody
@@ -420,9 +448,16 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
             p.apply_modifiers = self.apply_modifiers
             p.generate_preview = self.generate_preview
 
+        if self.selected_only and context.selected_objects:
+            target_objects = [o for o in context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+            if not target_objects:
+                target_objects = [obj]
+        else:
+            target_objects = [obj]
+
         try:
-            res = build_vwo_package(obj, self, self.filepath)
-            msg = f"Успешно собран .vwo ({res['triangles']} полигонов, {res['size'] // 1024} КБ)"
+            res = build_vwo_package(target_objects, self, self.filepath)
+            msg = f"Успешно собран .vwo ({len(target_objects)} мешей, {res['triangles']} полигонов, {res['size'] // 1024} КБ)"
             if res.get('installed'):
                 msg += f" | {res.get('install_message')}"
             else:
@@ -593,9 +628,16 @@ class OBJECT_OT_varwin_quick_export(bpy.types.Operator):
         os.makedirs(out_dir, exist_ok=True)
         out_path = os.path.join(out_dir, f"{safe_name}.vwo")
 
+        if props.selected_only and context.selected_objects:
+            target_objects = [o for o in context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+            if not target_objects:
+                target_objects = [obj]
+        else:
+            target_objects = [obj]
+
         try:
-            res = build_vwo_package(obj, props, out_path)
-            msg = f"Объект '{safe_name}.vwo' готов ({res['triangles']} tris, {res['size'] // 1024} КБ)"
+            res = build_vwo_package(target_objects, props, out_path)
+            msg = f"Объект '{safe_name}.vwo' готов ({len(target_objects)} мешей, {res['triangles']} tris, {res['size'] // 1024} КБ)"
             if res.get('installed'):
                 msg += " | Добавлен в библиотеку Varwin!"
             else:
@@ -938,11 +980,87 @@ class SCENE_PT_varwin_scene(bpy.types.Panel):
             draw_varwin_scene_ui(self.layout, context, scene, scene.varwin_scene)
 
 
+class OBJECT_OT_varwin_separate_by_material(bpy.types.Operator):
+    """Разделяет меш на отдельные объекты по слотам материалов с удалением неиспользуемых слотов"""
+    bl_idname = "object.varwin_separate_by_material"
+    bl_label = "Разделить по материалам"
+    bl_description = "Разбивает геометрию активного объекта на отдельные меши для каждого материала"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return bool(obj and obj.type == 'MESH' and len(obj.material_slots) > 1)
+
+    def execute(self, context):
+        obj = context.active_object
+        if not obj or obj.type != 'MESH':
+            self.report({'ERROR'}, "Выберите полигональный меш!")
+            return {'CANCELLED'}
+
+        orig_name = obj.name
+        try:
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.mesh.separate(type='MATERIAL')
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+            created = [o for o in context.selected_objects if o.type == 'MESH']
+            # Clean unused slots on separated objects so each object keeps only its material
+            for o in created:
+                context.view_layer.objects.active = o
+                bpy.ops.object.material_slot_remove_unused()
+
+            context.view_layer.objects.active = obj
+            self.report({'INFO'}, f"Меш '{orig_name}' разделен на {len(created)} объектов по материалам!")
+            return {'FINISHED'}
+        except Exception as e:
+            if obj.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            self.report({'ERROR'}, f"Не удалось разделить меш: {str(e)}")
+            return {'CANCELLED'}
+
+
+class OBJECT_OT_varwin_join_selected(bpy.types.Operator):
+    """Объединяет выделенные меши в один объект с сохранением опорной точки активного объекта"""
+    bl_idname = "object.varwin_join_selected"
+    bl_label = "Объединить выделенные"
+    bl_description = "Объединяет выделенные полигональные объекты в единый меш (Ctrl+J) с опорной точкой активного объекта"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        meshes = [o for o in getattr(context, 'selected_objects', []) if o.type == 'MESH']
+        return len(meshes) > 1
+
+    def execute(self, context):
+        act = context.active_object
+        selected_meshes = [o for o in context.selected_objects if o.type == 'MESH']
+        if not selected_meshes:
+            self.report({'ERROR'}, "Нет выделенных мешей!")
+            return {'CANCELLED'}
+
+        if not act or act.type != 'MESH' or act not in selected_meshes:
+            act = selected_meshes[0]
+            context.view_layer.objects.active = act
+
+        count = len(selected_meshes)
+        try:
+            bpy.ops.object.join()
+            self.report({'INFO'}, f"{count} мешей успешно объединены в '{context.active_object.name}'!")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Не удалось объединить меши: {str(e)}")
+            return {'CANCELLED'}
+
+
 classes = (
     OBJECT_OT_varwin_export,
     SCENE_OT_varwin_export_vwt,
     OBJECT_OT_varwin_quick_export,
     SCENE_OT_varwin_quick_export_vwt,
+    OBJECT_OT_varwin_separate_by_material,
+    OBJECT_OT_varwin_join_selected,
     OBJECT_OT_varwin_apply_preset,
     VARWIN_OT_switch_to_properties,
     VARWIN_OT_install_dependencies,
