@@ -54,6 +54,29 @@ class VarwinAddonPreferences(bpy.types.AddonPreferences):
             pass
 
 
+_in_scope_sync = False
+
+def _on_export_scope_updated(self, context):
+    global _in_scope_sync
+    if _in_scope_sync:
+        return
+    _in_scope_sync = True
+    try:
+        self.selected_only = (self.export_scope == 'SELECTED')
+    finally:
+        _in_scope_sync = False
+
+def _on_selected_only_updated(self, context):
+    global _in_scope_sync
+    if _in_scope_sync:
+        return
+    _in_scope_sync = True
+    try:
+        self.export_scope = 'SELECTED' if self.selected_only else 'VISIBLE'
+    finally:
+        _in_scope_sync = False
+
+
 class VarwinObjectProperties(bpy.types.PropertyGroup):
     # Metadata
     object_name_ru: bpy.props.StringProperty(
@@ -290,12 +313,14 @@ class VarwinObjectProperties(bpy.types.PropertyGroup):
             ("VISIBLE", "Все видимые меши сцены", "Собрать всю видимую геометрию сцены в единый объект Varwin", "HIDE_OFF", 2),
         ],
         default="SELECTED",
-        description="Выбор полигональных объектов для сборки в объект Varwin (.vwo)"
+        description="Выбор полигональных объектов для сборки в объект Varwin (.vwo)",
+        update=_on_export_scope_updated
     )
     selected_only: bpy.props.BoolProperty(
         name="Только выделенные",
         default=True,
-        description="Экспортировать только выделенные меши в единый объект Varwin (иначе активный меш)"
+        description="Экспортировать только выделенные меши в единый объект Varwin (иначе все видимые меши)",
+        update=_on_selected_only_updated
     )
     embed_textures: bpy.props.BoolProperty(
         name="Внедрять текстуры (PBR)",

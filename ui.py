@@ -71,22 +71,32 @@ def draw_varwin_object_ui(layout, context, obj, props):
     # 2. Geometry & Materials scope
     box_geo = layout.box()
     box_geo.label(text="2. Геометрия и материалы в .vwo", icon='OUTLINER_OB_MESH')
-    box_geo.prop(props, "export_scope", text="Область")
+
+    # Selected only toggle (matching Scene template UI)
+    row_sel = box_geo.row()
+    row_sel.prop(props, "selected_only")
 
     selected_count = len([o for o in context.selected_objects if o.type == 'MESH']) if getattr(context, 'selected_objects', None) else 0
     visible_count = len([o for o in context.scene.objects if o.type == 'MESH' and not o.hide_get()]) if getattr(context, 'scene', None) else 0
 
-    if props.export_scope == 'SELECTED':
-        box_geo.label(text=f"Выделено мешей для сборки: {selected_count}", icon='CHECKMARK' if selected_count > 0 else 'ERROR')
-    elif props.export_scope == 'ACTIVE':
-        box_geo.label(text=f"Экспорт только активного меша: {obj.name}", icon='OBJECT_DATA')
+    if props.selected_only:
+        if selected_count > 1:
+            box_geo.label(text=f"Выделено мешей для сборки: {selected_count}", icon='CHECKMARK')
+        elif selected_count == 1:
+            box_geo.label(text=f"Выделен 1 меш: {obj.name}", icon='OBJECT_DATA')
+        else:
+            box_geo.label(text=f"Нет выделенных мешей! Экспорт: {obj.name}", icon='ERROR')
     else:
-        box_geo.label(text=f"Всего видимых мешей в сцене: {visible_count}", icon='HIDE_OFF')
+        box_geo.label(text=f"Все видимые меши сцены: {visible_count} шт.", icon='HIDE_OFF')
 
     box_geo.label(text=f"Опорная точка (Pivot): {obj.name}", icon='PIVOT_CURSOR')
 
-    row_split = box_geo.row(align=True)
-    row_split.operator("object.varwin_separate_by_material", text="Разделить по материалам", icon='UNLINKED')
+    # Slicing and separation tools (BIOS request)
+    box_tools = box_geo.box()
+    box_tools.label(text="Инструменты нарезки по материалам:", icon='MOD_BEVEL')
+    row_split = box_tools.row(align=True)
+    row_split.scale_y = 1.2
+    row_split.operator("object.varwin_separate_by_material", text="Слайс по материалам", icon='UNLINKED')
     row_split.operator("object.varwin_join_selected", text="Объединить выделенные", icon='AUTOMERGE_ON')
 
     box_mat_opt = box_geo.box()
@@ -436,6 +446,7 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
 
         box_geo = layout.box()
         box_geo.label(text="Геометрия и материалы в .vwo", icon='OUTLINER_OB_MESH')
+        box_geo.prop(self, "selected_only")
         box_geo.prop(self, "export_scope", text="Область")
         box_geo.prop(self, "embed_textures")
         box_geo.prop(self, "preserve_materials")
@@ -501,6 +512,8 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
             p.generate_preview = self.generate_preview
 
         scope = getattr(self, 'export_scope', 'SELECTED')
+        if hasattr(self, 'selected_only') and not self.selected_only and scope == 'SELECTED':
+            scope = 'VISIBLE'
         if scope == 'ACTIVE':
             target_objects = [obj]
         elif scope == 'VISIBLE':
@@ -707,6 +720,8 @@ class OBJECT_OT_varwin_quick_export(bpy.types.Operator):
         out_path = os.path.join(out_dir, f"{safe_name}.vwo")
 
         scope = getattr(props, 'export_scope', 'SELECTED')
+        if hasattr(props, 'selected_only') and not props.selected_only and scope == 'SELECTED':
+            scope = 'VISIBLE'
         if scope == 'ACTIVE':
             target_objects = [obj]
         elif scope == 'VISIBLE':
@@ -1120,41 +1135,73 @@ class OBJECT_OT_varwin_separate_by_material(bpy.types.Operator):
     """Разделяет меш на отдельные объекты по слотам материалов с удалением неиспользуемых слотов"""
     bl_idname = "object.varwin_separate_by_material"
     bl_label = "Разделить по материалам"
-    bl_description = "Разбивает геометрию активного объекта на отдельные меши для каждого материала"
+    bl_description = "Разбивает геометрию на отдельные меши для каждого материала (для всех выделенных объектов)"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
     def poll(cls, context):
+        if getattr(context, 'selected_objects', None):
+            return any(o.type == 'MESH' and len(o.material_slots) > 1 for o in context.selected_objects)
         obj = context.active_object
         return bool(obj and obj.type == 'MESH' and len(obj.material_slots) > 1)
 
     def execute(self, context):
-        obj = context.active_object
-        if not obj or obj.type != 'MESH':
-            self.report({'ERROR'}, "Выберите полигональный меш!")
+        selected_meshes = [o for o in context.selected_objects if o.type == 'MESH'] if getattr(context, 'selected_objects', None) else []
+        if not selected_meshes and context.active_object and context.active_object.type == 'MESH':
+            selected_meshes = [context.active_object]
+
+        candidates = [o for o in selected_meshes if len(o.material_slots) > 1]
+        if not candidates:
+            self.report({'WARNING'}, "Ни один из выделенных объектов не содержит более одного материала!")
             return {'CANCELLED'}
 
-        orig_name = obj.name
-        try:
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.mesh.separate(type='MATERIAL')
+        if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
-            created = [o for o in context.selected_objects if o.type == 'MESH']
-            # Clean unused slots on separated objects so each object keeps only its material
-            for o in created:
-                context.view_layer.objects.active = o
-                bpy.ops.object.material_slot_remove_unused()
+        all_resulting_objects = [o for o in selected_meshes if o not in candidates]
+        total_separated = 0
+        total_pieces = 0
 
-            context.view_layer.objects.active = obj
-            self.report({'INFO'}, f"Меш '{orig_name}' разделен на {len(created)} объектов по материалам!")
-            return {'FINISHED'}
-        except Exception as e:
-            if obj.mode != 'OBJECT':
+        for target in candidates:
+            orig_name = target.name
+            try:
+                bpy.ops.object.select_all(action='DESELECT')
+                target.select_set(True)
+                context.view_layer.objects.active = target
+
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.mesh.separate(type='MATERIAL')
                 bpy.ops.object.mode_set(mode='OBJECT')
-            self.report({'ERROR'}, f"Не удалось разделить меш: {str(e)}")
-            return {'CANCELLED'}
+
+                pieces = [o for o in context.selected_objects if o.type == 'MESH']
+                for piece in pieces:
+                    context.view_layer.objects.active = piece
+                    bpy.ops.object.material_slot_remove_unused()
+                    if piece not in all_resulting_objects:
+                        all_resulting_objects.append(piece)
+
+                total_separated += 1
+                total_pieces += len(pieces)
+            except Exception as e:
+                if context.mode != 'OBJECT':
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                self.report({'WARNING'}, f"Не удалось разделить '{orig_name}': {e}")
+                if target not in all_resulting_objects:
+                    all_resulting_objects.append(target)
+
+        bpy.ops.object.select_all(action='DESELECT')
+        for o in all_resulting_objects:
+            try:
+                o.select_set(True)
+            except Exception:
+                pass
+
+        if all_resulting_objects:
+            context.view_layer.objects.active = all_resulting_objects[0]
+
+        self.report({'INFO'}, f"Разделено объектов: {total_separated}, получено частей: {total_pieces} (всего объектов: {len(all_resulting_objects)})")
+        return {'FINISHED'}
 
 
 class OBJECT_OT_varwin_join_selected(bpy.types.Operator):

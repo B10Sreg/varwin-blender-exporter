@@ -308,18 +308,9 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 col = m_info.get('color', (0.8, 0.8, 0.8, 1.0))
                 ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
 
-                # Protect against Varwin's VisualizationBehaviour overriding all materials:
-                # Varwin's VisualizationBehaviourHelper.CanAddBehaviour checks:
-                # `materials.All(m => m.color == firstColor)`
-                # If all materials have the exact same color, Varwin attaches VisualizationBehaviour,
-                # which forces _mainColor across ALL submeshes via MaterialPropertyBlock!
-                # By applying an imperceptible delta (0.002) to each material's color,
-                # CanAddBehaviour returns False, cleanly disabling VisualizationBehaviour
-                # and preserving every submesh's individual materials and textures untouched!
-                if preserve and has_multiple_or_textures:
-                    delta = 0.002 * (i % 7 + 1)
-                    col = (col[0], max(0.0, col[1] - delta), col[2], col[3] if len(col) > 3 else 1.0)
-
+                # Clean authentic RGB colors from Blender materials
+                # Material protection against Varwin VisualizationBehaviour is handled cleanly
+                # at the engine level via AddBehavioursAtRuntime=0 and DisableSceneLogic=1
                 for c in tree.get('m_SavedProperties', {}).get('m_Colors', []):
                     if c[0] == '_Color':
                         c[1]['r'] = float(col[0])
@@ -337,6 +328,8 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     for t_env in tree.get('m_SavedProperties', {}).get('m_TexEnvs', []):
                         if t_env[0] == '_MainTex':
                             t_env[1]['m_Texture'] = {'m_FileID': 0, 'm_PathID': tex_pid}
+                            t_env[1]['m_Scale'] = {'x': 1.0, 'y': 1.0}
+                            t_env[1]['m_Offset'] = {'x': 0.0, 'y': 0.0}
 
                 is_emissive = max(ecol[0], ecol[1], ecol[2]) > 0.01
                 if is_emissive:
@@ -503,14 +496,26 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                         if 'Config' not in cb or not isinstance(cb['Config'], dict):
                             cb['Config'] = {}
                         cb['Config'].update(vr_config)
+
+                        # CRITICAL FIX: Protect materials against Varwin's runtime color override!
+                        # When preserve_materials is True (default), disable AddBehavioursAtRuntime
+                        # and mark DisableSceneLogic = True. This completely disables Varwin's
+                        # VisualizationBehaviour so Varwin never replaces MeshRenderer.sharedMaterials
+                        # with LitMaterials and never crushes all submeshes into a single color!
+                        if preserve:
+                            cb['DisableSceneLogic'] = True
+
                         tree['ConfigBlockly'] = json.dumps(cb, ensure_ascii=False)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"Warning: Failed to update ConfigBlockly: {e}")
 
                     tree['Name'] = safe_asset_name
                     tree['Guid'] = new_guid
                     tree['RootGuid'] = new_root_guid
                     tree['AuthorName'] = getattr(props, 'author_name', '') or "Blender Artist"
+                    if preserve:
+                        tree['DisableSceneLogic'] = 1
+                        tree['AddBehavioursAtRuntime'] = 0
                     o.save_typetree(tree)
                     break
 
@@ -569,6 +574,8 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
     install_meta['DefaultVariableName'] = sanitize_variable_name(getattr(props, 'object_name_en', '') or obj.name)
     install_meta['MobileReady'] = True
     install_meta['LinuxReady'] = True
+    if preserve:
+        install_meta['DisableSceneLogic'] = True
     if 'Config' not in install_meta or not isinstance(install_meta['Config'], dict):
         install_meta['Config'] = {}
     install_meta['Config'].update(vr_config)
