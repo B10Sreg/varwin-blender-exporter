@@ -390,13 +390,21 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 break
 
         # C.2. In-place patch MeshRenderer
-        if mat_pids:
-            for o in env.objects:
-                if o.type.name == 'MeshRenderer':
-                    tree = o.read_typetree()
+        for o in env.objects:
+            if o.type.name == 'MeshRenderer':
+                tree = o.read_typetree()
+                if mat_pids:
                     tree['m_Materials'] = [{'m_FileID': 0, 'm_PathID': pid} for pid in mat_pids]
-                    o.save_typetree(tree)
-                    break
+                # Ensure object receives dynamic lighting from Light Probes & Reflection Probes correctly when moved
+                tree['m_LightProbeUsage'] = 1  # Blend Probes (samples surrounding light probes dynamically)
+                tree['m_ReflectionProbeUsage'] = 1  # Blend Probes
+                tree['m_ReceiveShadows'] = 1
+                tree['m_CastShadows'] = 1
+                # Disable baked lightmap so moving the object doesn't cause lighting artifacts
+                tree['m_LightmapIndex'] = 65535
+                tree['m_LightmapIndexDynamic'] = 65535
+                o.save_typetree(tree)
+                break
 
             # C.2b. Register all cloned materials and textures in AssetBundle m_PreloadTable and update container preloadSize
             # This ensures Unity preloads all material slots and textures when instantiating the prefab, preventing fallbacks to slot 0
