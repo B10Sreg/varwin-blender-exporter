@@ -523,10 +523,15 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         out_buf.write(env.file.save())
         template_files[bname] = out_buf.getvalue()
 
-    # 6. Update bundle.json with unique AssetName
+    # 6. Update bundle.json - preserve AssetName from the template!
+    # CRITICAL: AssetName must exactly match the prefab name INSIDE the binary AssetBundle.
+    # Our exporter reuses a VCylinder template bundle, so the binary always contains
+    # 'VCylinder.prefab'. Overwriting AssetName with clean_name causes
+    # ArgumentException: The Object you want to instantiate is null.
+    # We only update the Assembly list, never AssetName.
     if 'bundle.json' in template_files:
         bjson = json.loads(template_files['bundle.json'].decode('utf-8'))
-        bjson['AssetName'] = safe_asset_name
+        # DO NOT change bjson['AssetName'] - keep original value from template (e.g. 'VCylinder')
         template_files['bundle.json'] = json.dumps(bjson, indent=2).encode('utf-8')
 
     # 7. Update manifests with unique asset paths
