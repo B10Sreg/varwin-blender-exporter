@@ -11,6 +11,39 @@ except ImportError:
     Image = None
 
 
+def resolve_image_filepath(img):
+    """Resolves image filepath handling relative paths, Windows backslashes, and blend dir."""
+    if not img:
+        return ""
+    raw_path = getattr(img, 'filepath_raw', '') or getattr(img, 'filepath', '')
+    if not raw_path:
+        return ""
+    # Normalize Windows backslashes to forward slashes
+    clean_path = raw_path.replace('\\', '/')
+    try:
+        abs_path = bpy.path.abspath(clean_path)
+        if os.path.isfile(abs_path):
+            return abs_path
+    except Exception:
+        pass
+
+    # If blend file is saved, try relative to blend folder
+    blend_dir = os.path.dirname(bpy.data.filepath) if bpy.data.filepath else ""
+    if blend_dir:
+        # Strip leading //
+        rel_stripped = clean_path.lstrip('/')
+        candidate = os.path.join(blend_dir, rel_stripped)
+        if os.path.isfile(candidate):
+            return candidate
+        # Also try just filename in same folder as blend
+        filename = os.path.basename(clean_path)
+        candidate2 = os.path.join(blend_dir, filename)
+        if os.path.isfile(candidate2):
+            return candidate2
+
+    return ""
+
+
 def extract_image_texture(img):
     """
     Extracts raw RGBA bytes from a Blender bpy.types.Image (packed, filepath, or pixel buffer),
@@ -24,24 +57,41 @@ def extract_image_texture(img):
         im = None
         # 1. Packed image in .blend file
         if getattr(img, 'packed_file', None) and img.packed_file.data:
-            im = Image.open(io.BytesIO(img.packed_file.data))
-            im = im.convert('RGBA')
-            im = im.transpose(Image.FLIP_TOP_BOTTOM)
-        # 2. Filepath on disk
-        elif img.filepath:
-            disk_path = bpy.path.abspath(img.filepath)
-            if os.path.isfile(disk_path):
-                im = Image.open(disk_path)
+            try:
+                im = Image.open(io.BytesIO(img.packed_file.data))
                 im = im.convert('RGBA')
                 im = im.transpose(Image.FLIP_TOP_BOTTOM)
+            except Exception as e:
+                print(f"Warning: Failed to load packed data for {img.name}: {e}")
 
-        # 3. Fallback: read directly from Blender pixel buffer
-        if im is None and img.size[0] > 0 and img.size[1] > 0:
-            w, h = img.size[0], img.size[1]
-            raw_floats = list(img.pixels)
-            if len(raw_floats) == w * h * 4:
-                b_data = bytes(int(max(0.0, min(1.0, c)) * 255) for c in raw_floats)
-                im = Image.frombytes('RGBA', (w, h), b_data)
+        # 2. Filepath on disk (with multi-path and Windows path normalization)
+        if im is None:
+            disk_path = resolve_image_filepath(img)
+            if disk_path and os.path.isfile(disk_path):
+                try:
+                    im = Image.open(disk_path)
+                    im = im.convert('RGBA')
+                    im = im.transpose(Image.FLIP_TOP_BOTTOM)
+                except Exception as e:
+                    print(f"Warning: Failed to read texture from disk path {disk_path}: {e}")
+
+        # 3. Fallback: read directly from Blender pixel buffer (forces image reload/eval)
+        if im is None:
+            try:
+                # Force Blender to load pixels into buffer if not loaded
+                if not getattr(img, 'has_data', False):
+                    try:
+                        img.reload()
+                    except Exception:
+                        pass
+                if img.size[0] > 0 and img.size[1] > 0:
+                    w, h = img.size[0], img.size[1]
+                    raw_floats = list(img.pixels)
+                    if len(raw_floats) == w * h * 4:
+                        b_data = bytes(int(max(0.0, min(1.0, c)) * 255) for c in raw_floats)
+                        im = Image.frombytes('RGBA', (w, h), b_data)
+            except Exception as e:
+                print(f"Warning: Pixel buffer fallback failed for {img.name}: {e}")
 
         if im is None:
             return None
@@ -59,6 +109,31 @@ def extract_image_texture(img):
     except Exception as e:
         print(f"Warning: Failed to extract texture from image '{getattr(img, 'name', 'unknown')}': {e}")
         return None
+
+
+def find_image_texture_node(input_socket, visited=None):
+    """Recursively traverses shader node tree backwards from input_socket to find an Image Texture node."""
+    if not input_socket or not input_socket.is_linked:
+        return None
+    if visited is None:
+        visited = set()
+
+    for link in input_socket.links:
+        from_node = link.from_node
+        if from_node in visited:
+            continue
+        visited.add(from_node)
+
+        if from_node.type == 'TEX_IMAGE' and getattr(from_node, 'image', None):
+            return from_node
+
+        # Recurse through intermediate nodes (Mix, Invert, RGB Curves, ColorRamp, Gamma, Group, etc.)
+        for inp in from_node.inputs:
+            if inp.is_linked:
+                found = find_image_texture_node(inp, visited)
+                if found:
+                    return found
+    return None
 
 
 def extract_material_properties(mat):
@@ -89,15 +164,19 @@ def extract_material_properties(mat):
                 base_color_input = node.inputs.get('Base Color')
                 if base_color_input:
                     if base_color_input.is_linked and base_color_input.links:
-                        from_node = base_color_input.links[0].from_node
-                        if from_node and from_node.type == 'RGB':
-                            base_color = tuple(float(c) for c in from_node.outputs[0].default_value[:4])
-                        elif from_node and from_node.type == 'TEX_IMAGE' and getattr(from_node, 'image', None):
-                            texture = extract_image_texture(from_node.image)
-                            # When texture is present, use pure neutral white (1,1,1,1) tint so texture colors shine naturally
-                            base_color = (1.0, 1.0, 1.0, 1.0)
-                        else:
-                            base_color = tuple(float(c) for c in mat.diffuse_color[:4])
+                        tex_node = find_image_texture_node(base_color_input)
+                        if tex_node and getattr(tex_node, 'image', None):
+                            texture = extract_image_texture(tex_node.image)
+                            if texture:
+                                # Neutral white tint so texture colors display authentically
+                                base_color = (1.0, 1.0, 1.0, 1.0)
+                        
+                        if not texture:
+                            from_node = base_color_input.links[0].from_node
+                            if from_node and from_node.type == 'RGB':
+                                base_color = tuple(float(c) for c in from_node.outputs[0].default_value[:4])
+                            else:
+                                base_color = tuple(float(c) for c in mat.diffuse_color[:4])
                     else:
                         base_color = tuple(float(c) for c in base_color_input.default_value[:4])
 
@@ -221,7 +300,14 @@ def extract_object_geometry(objects, root_obj=None, apply_modifiers: bool = True
                     u = float(uv_data[loop_idx].uv[0])
                     v_coord = float(uv_data[loop_idx].uv[1])
                 else:
-                    u, v_coord = 0.0, 0.0
+                    # Planar/Box UV projection based on normal orientation (Unity coordinates: Y is up)
+                    abs_nx, abs_ny, abs_nz = abs(nx), abs(ny), abs(nz)
+                    if abs_ny >= abs_nx and abs_ny >= abs_nz:
+                        u, v_coord = px * 0.5, pz * 0.5
+                    elif abs_nx >= abs_ny and abs_nx >= abs_nz:
+                        u, v_coord = pz * 0.5, py * 0.5
+                    else:
+                        u, v_coord = px * 0.5, py * 0.5
 
                 min_x = min(min_x, px)
                 max_x = max(max_x, px)
