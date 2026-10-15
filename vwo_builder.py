@@ -356,7 +356,8 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 gloss = float(m_info.get('glossiness', 0.5))
                 floats = tree.get('m_SavedProperties', {}).get('m_Floats', [])
                 tree['m_SavedProperties']['m_Floats'] = [
-                    (k, met if k == '_Metallic' else (gloss if k == '_Glossiness' else v))
+                    (k, (1.0 if is_emissive else 0.0) if k == '_EmissionEnabled' else
+                        (met if k == '_Metallic' else (gloss if k == '_Glossiness' else v)))
                     for k, v in floats
                 ]
                 m_obj.save_typetree(tree)
@@ -651,9 +652,9 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
             uz = float(loc.y)
             col = tuple(float(c) for c in obj.data.color[:3])
             energy = float(getattr(obj.data, 'energy', 25.0))
-            intensity = min(6.0, max(1.5, energy / 12.0 if energy > 12.0 else 2.5))
+            intensity = min(8.0, max(0.8, energy / 15.0 if energy > 15.0 else 1.8))
             cutoff = getattr(obj.data, 'cutoff_distance', 0.0)
-            range_val = float(cutoff) if cutoff > 0.5 else 16.0
+            range_val = float(cutoff) if cutoff > 0.5 else min(12.0, max(5.0, (energy ** 0.5) * 1.5))
             scene_point_lights.append({
                 'name': obj.name,
                 'pos': (ux, uy, uz),
@@ -683,7 +684,7 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
         except Exception:
             sun_rot_quat = None
     else:
-        sun_color = tuple(float(c) for c in getattr(scene_props, 'light_color', (1.0, 0.95, 0.85))[:3])
+        sun_color = tuple(float(c) for c in getattr(scene_props, 'light_color', (1.0, 0.98, 0.92))[:3])
         sun_intensity = float(getattr(scene_props, 'light_intensity', 1.0))
 
     # 2. Read template contents
@@ -837,7 +838,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 gloss = float(m_info.get('glossiness', 0.5))
                 floats = tree.get('m_SavedProperties', {}).get('m_Floats', [])
                 tree['m_SavedProperties']['m_Floats'] = [
-                    (k, met if k == '_Metallic' else (gloss if k == '_Glossiness' else v))
+                    (k, (1.0 if is_emissive else 0.0) if k == '_EmissionEnabled' else
+                        (met if k == '_Metallic' else (gloss if k == '_Glossiness' else v)))
                     for k, v in floats
                 ]
                 m_obj.save_typetree(tree)
@@ -1107,8 +1109,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 o.save_typetree(tree)
             elif o.type.name == 'Light' and (o.path_id == light_pid or o.path_id in (14, 219)):
                 tree = o.read_typetree()
-                # Use scene Sun intensity if present, or soft fill for interior
-                tree['m_Intensity'] = float(sun_intensity) if sun_obj else min(float(sun_intensity), 0.50)
+                # Apply user-specified sun intensity directly without arbitrary caps
+                tree['m_Intensity'] = float(sun_intensity)
                 tree['m_Color'] = {
                     'r': float(sun_color[0]),
                     'g': float(sun_color[1]),
@@ -1121,13 +1123,14 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                     tree['m_BakingOutput']['lightmapBakeType'] = 4
 
                 if 'm_Shadows' in tree:
-                    shadow_type = getattr(scene_props, 'light_shadows', 'NONE')
+                    shadow_type = getattr(scene_props, 'light_shadows', 'SOFT')
+                    shadow_str = float(getattr(scene_props, 'shadow_strength', 0.45))
                     if shadow_type == 'HARD':
                         tree['m_Shadows']['m_Type'] = 1
-                        tree['m_Shadows']['m_Strength'] = 0.55
+                        tree['m_Shadows']['m_Strength'] = max(0.0, min(1.0, shadow_str))
                     elif shadow_type == 'SOFT':
                         tree['m_Shadows']['m_Type'] = 2
-                        tree['m_Shadows']['m_Strength'] = 0.55
+                        tree['m_Shadows']['m_Strength'] = max(0.0, min(1.0, shadow_str))
                     else:
                         tree['m_Shadows']['m_Type'] = 0
                 o.save_typetree(tree)
@@ -1135,16 +1138,21 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 tree = o.read_typetree()
                 # Mode 3: Flat Ambient Color (Directly evaluated in Forward Pixel Shader, prevents pitch-black surfaces!)
                 tree['m_AmbientMode'] = 3
-                tree['m_AmbientIntensity'] = 1.0
+
+                amb_intensity = float(getattr(scene_props, 'ambient_intensity', 0.70))
+                amb_col = tuple(float(c) for c in getattr(scene_props, 'ambient_color', (0.68, 0.70, 0.75))[:3])
+
                 if sun_obj:
-                    amb_r = max(0.45, min(0.85, float(sun_color[0]) * 0.75))
-                    amb_g = max(0.40, min(0.80, float(sun_color[1]) * 0.70))
-                    amb_b = max(0.35, min(0.75, float(sun_color[2]) * 0.65))
+                    # Blend daylight sun color into ambient
+                    amb_r = max(0.20, min(1.0, (amb_col[0] * 0.4 + float(sun_color[0]) * 0.6) * amb_intensity))
+                    amb_g = max(0.20, min(1.0, (amb_col[1] * 0.4 + float(sun_color[1]) * 0.6) * amb_intensity))
+                    amb_b = max(0.20, min(1.0, (amb_col[2] * 0.4 + float(sun_color[2]) * 0.6) * amb_intensity))
                 else:
-                    # Indoor scene with point lights: subtle ambient to avoid pitch black, but allow point light contrast
-                    amb_r = 0.22
-                    amb_g = 0.20
-                    amb_b = 0.16
+                    amb_r = max(0.20, min(1.0, amb_col[0] * amb_intensity))
+                    amb_g = max(0.20, min(1.0, amb_col[1] * amb_intensity))
+                    amb_b = max(0.20, min(1.0, amb_col[2] * amb_intensity))
+
+                tree['m_AmbientIntensity'] = 1.0
                 tree['m_AmbientSkyColor'] = {
                     'r': amb_r,
                     'g': amb_g,
@@ -1153,12 +1161,33 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 }
                 tree['m_AmbientEquatorColor'] = tree['m_AmbientSkyColor']
                 tree['m_AmbientGroundColor'] = {
-                    'r': amb_r * 0.85,
-                    'g': amb_g * 0.85,
-                    'b': amb_b * 0.85,
+                    'r': amb_r * 0.90,
+                    'g': amb_g * 0.90,
+                    'b': amb_b * 0.90,
                     'a': 1.0
                 }
-                tree['m_ReflectionIntensity'] = 0.5
+
+                # Tint subtractive shadows with ambient so shadows don't drop to black voids
+                if 'm_SubtractiveShadowColor' in tree:
+                    tree['m_SubtractiveShadowColor'] = {
+                        'r': max(0.35, amb_r * 0.8),
+                        'g': max(0.35, amb_g * 0.8),
+                        'b': max(0.35, amb_b * 0.8),
+                        'a': 1.0
+                    }
+
+                # Set uniform Spherical Harmonics ambient probe to eliminate directional black voids on walls/ceilings!
+                if 'm_AmbientProbe' in tree:
+                    probe = {}
+                    for k in range(27):
+                        probe[f'sh[{k:2d}]'] = 0.0
+                    # SH0 constant term in Unity Spherical Harmonics
+                    probe['sh[ 0]'] = float(amb_r)
+                    probe['sh[ 9]'] = float(amb_g)
+                    probe['sh[18]'] = float(amb_b)
+                    tree['m_AmbientProbe'] = probe
+
+                tree['m_ReflectionIntensity'] = 0.6
                 o.save_typetree(tree)
 
         out_buf = io.BytesIO()

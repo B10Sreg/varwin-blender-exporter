@@ -402,17 +402,39 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         name="Цвет солнца",
         subtype='COLOR',
         size=3,
-        default=(1.0, 0.95, 0.85),
+        default=(1.0, 0.98, 0.92),
         description="Цвет основного источника света"
     )
     light_shadows: bpy.props.EnumProperty(
         name="Тени солнца",
         items=[
+            ("SOFT", "Мягкие тени (Рекомендуется)", "Мягкие реалистичные тени без черных провалов"),
             ("NONE", "Без теней (Интерьер)", "Отключает тени от крыши для равномерного освещения интерьеров"),
-            ("SOFT", "Мягкие тени (Экстерьер)", "Реалистичные мягкие тени от солнца для открытых уличных локаций"),
+            ("HARD", "Резкие тени", "Жесткие контрастные тени"),
         ],
-        default="NONE",
+        default="SOFT",
         description="Режим отбрасывания теней направленным источником света"
+    )
+    shadow_strength: bpy.props.FloatProperty(
+        name="Плотность теней",
+        default=0.45,
+        min=0.0,
+        max=1.0,
+        description="Плотность теней (чем ниже, тем прозрачнее и мягче тени в затемненных углах)"
+    )
+    ambient_intensity: bpy.props.FloatProperty(
+        name="Яркость окружения (эмбиент)",
+        default=0.70,
+        min=0.0,
+        max=3.0,
+        description="Интенсивность рассеянного света в тенях и закрытых помещениях (устраняет темноту)"
+    )
+    ambient_color: bpy.props.FloatVectorProperty(
+        name="Цвет рассеянного света",
+        subtype='COLOR',
+        size=3,
+        default=(0.68, 0.70, 0.75),
+        description="Цвет фонового рассеянного света, заполняющего неосвещенные солнцем зоны"
     )
 
     # Export & Installation

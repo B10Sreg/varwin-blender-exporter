@@ -45,9 +45,10 @@
   - Специализированная поверхность телепортации (`TeleportArea`, Mesh 39, Tag 20000) для плавного и точного VR-передвижения.
 - **Освещение и атмосфера:**
   - Передача реального угла и кватерниона вращения солнца (`SUN` Light в Blender) в направленный свет Unity (`Directional Light_BAKED`).
-  - Мягкие реалистичные тени (*Soft Shadows*, сила 0.55), устраняющие эффект «черных провалов».
-  - Плоский рассеянный рассеянный свет (*Flat Ambient Mode 3*) с автобалансом цвета неба, гарантирующий корректный рендеринг на Oculus Quest 2 и PCVR.
-  - Автоматический перенос точечных источников света (*Point Lights*) из Blender в сцену Unity.
+  - Полная кастомизация силы солнца (без искусственных ограничений) и мягкости теней (*Soft Shadows*, регулируемая плотность 0.0 – 1.0).
+  - Равномерное сферическое гармоническое освещение (*Isotropic Spherical Harmonics*), полностью исключающее эффект «черных дыр» и темных провалов на стенах и потолках.
+  - Настраиваемый фоновый свет (Ambient Light) по интенсивности и цвету с быстрыми пресетами в 1 клик («Солнце», «Интерьер», «Атмосфера», «Студия»).
+  - Автоматический перенос точечных источников света (*Point Lights*) из Blender в сцену Unity с оптимизированным радиусом затухания под лимиты Forward-рендеринга.
 - **Точка спавна игрока:**
   - По положению 3D Курсора;
   - По выделенному объекту;
@@ -143,9 +144,10 @@ Runs natively on **Windows, Linux, and macOS**.
   - 1-Click VR & Physics Presets.
 - **Scene Templates (`.vwst`):**
   - Smart geometry splitting: Visual mesh (`Base`), overhead-free physical collisions (`BaseCollision`), and dedicated locomotion surface (`TeleportArea`, Tag 20000).
-  - Directional Sun extraction: synchronizes Blender `SUN` rotation to Unity's directional light with soft daylight shadows (strength 0.55).
-  - Flat ambient mode 3: prevents pitch-black surfaces on mobile VR (Meta Quest 2) and PCVR.
-  - Point Light injection from Blender into the Unity scene.
+  - Directional Sun extraction: synchronizes Blender `SUN` rotation to Unity's directional light with uncapped intensity and customizable soft shadow strength.
+  - Isotropic Spherical Harmonics ambient lighting: completely eliminates pitch-black directional shadows and voids on walls and ceilings in interior and outdoor scenes.
+  - Fully adjustable Ambient Light (intensity and color) with 1-click lighting presets (Outdoor, Indoor Bright, Dramatic, Studio).
+  - Optimized Point Light injection with bounded attenuation radii adhering to Unity Forward pixel light limits.
   - Configurable VR Player spawn points.
 - **PBR Multi-Material Pipeline:**
   - Automatic SubMesh segmentation per material slot.

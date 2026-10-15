@@ -251,10 +251,26 @@ def draw_varwin_scene_ui(layout, context, scene, scene_props):
 
     # 4. Environment & Lighting
     box_env = layout.box()
-    box_env.label(text="4. Освещение сцены", icon='LIGHT_SUN')
+    box_env.label(text="4. Освещение сцены и тени", icon='LIGHT_SUN')
     box_env.prop(scene_props, "light_intensity")
     box_env.prop(scene_props, "light_color")
     box_env.prop(scene_props, "light_shadows")
+    if scene_props.light_shadows != 'NONE':
+        box_env.prop(scene_props, "shadow_strength")
+
+    box_amb = box_env.box()
+    box_amb.label(text="Рассеянный свет (заполнение теней):", icon='WORLD')
+    box_amb.prop(scene_props, "ambient_intensity")
+    box_amb.prop(scene_props, "ambient_color")
+
+    row_lp = box_env.row(align=True)
+    row_lp.label(text="Пресеты света:")
+    op_sun = row_lp.operator("scene.varwin_apply_lighting_preset", text="Солнце")
+    op_sun.preset = 'OUTDOOR'
+    op_ind = row_lp.operator("scene.varwin_apply_lighting_preset", text="Интерьер")
+    op_ind.preset = 'INDOOR_BRIGHT'
+    op_atm = row_lp.operator("scene.varwin_apply_lighting_preset", text="Атмосфера")
+    op_atm.preset = 'DRAMATIC'
 
     # 5. Export Actions
     layout.separator()
@@ -549,14 +565,19 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
         default="CURSOR"
     )
     light_intensity: bpy.props.FloatProperty(name="Яркость солнца", default=1.0, min=0.0)
+    light_color: bpy.props.FloatVectorProperty(name="Цвет солнца", subtype='COLOR', default=(1.0, 0.98, 0.92))
     light_shadows: bpy.props.EnumProperty(
         name="Тени солнца",
         items=[
+            ("SOFT", "Мягкие тени (Рекомендуется)", "Мягкие полупрозрачные тени от солнца"),
             ("NONE", "Без теней (Интерьер)", "Отключает тени от крыши для равномерного освещения интерьеров"),
-            ("SOFT", "Мягкие тени (Экстерьер)", "Реалистичные мягкие тени от солнца для открытых уличных локаций"),
+            ("HARD", "Резкие тени", "Жесткие контрастные тени"),
         ],
-        default="NONE"
+        default="SOFT"
     )
+    shadow_strength: bpy.props.FloatProperty(name="Плотность теней", default=0.45, min=0.0, max=1.0)
+    ambient_intensity: bpy.props.FloatProperty(name="Яркость окружения (эмбиент)", default=0.70, min=0.0, max=3.0)
+    ambient_color: bpy.props.FloatVectorProperty(name="Цвет рассеянного света", subtype='COLOR', default=(0.68, 0.70, 0.75))
     generate_preview: bpy.props.BoolProperty(name="Создать превью", default=True)
 
     def invoke(self, context, event):
@@ -569,7 +590,11 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             self.selected_only = sp.selected_only
             self.spawn_mode = sp.spawn_mode if sp.spawn_mode in ('CURSOR', 'ACTIVE_OBJECT', 'ORIGIN') else 'CURSOR'
             self.light_intensity = sp.light_intensity
+            self.light_color = sp.light_color
             self.light_shadows = sp.light_shadows
+            self.shadow_strength = getattr(sp, 'shadow_strength', 0.45)
+            self.ambient_intensity = getattr(sp, 'ambient_intensity', 0.70)
+            self.ambient_color = getattr(sp, 'ambient_color', (0.68, 0.70, 0.75))
             self.generate_preview = sp.generate_preview
 
         env_export_dir = os.environ.get("VARWIN_DEFAULT_EXPORT_DIR", "").strip()
@@ -606,9 +631,14 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
         box_spawn.prop(self, "spawn_mode")
 
         box_env = layout.box()
-        box_env.label(text="Освещение", icon='LIGHT_SUN')
+        box_env.label(text="Освещение и тени", icon='LIGHT_SUN')
         box_env.prop(self, "light_intensity")
+        box_env.prop(self, "light_color")
         box_env.prop(self, "light_shadows")
+        if self.light_shadows != 'NONE':
+            box_env.prop(self, "shadow_strength")
+        box_env.prop(self, "ambient_intensity")
+        box_env.prop(self, "ambient_color")
         box_env.prop(self, "generate_preview")
 
     def execute(self, context):
@@ -626,7 +656,11 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             sp.selected_only = self.selected_only
             sp.spawn_mode = self.spawn_mode
             sp.light_intensity = self.light_intensity
+            sp.light_color = self.light_color
             sp.light_shadows = self.light_shadows
+            sp.shadow_strength = self.shadow_strength
+            sp.ambient_intensity = self.ambient_intensity
+            sp.ambient_color = self.ambient_color
             sp.generate_preview = self.generate_preview
 
         try:
@@ -828,6 +862,56 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.teleport_area = True
 
         self.report({'INFO'}, f"Применен пресет: {self.preset}")
+        return {'FINISHED'}
+
+
+class SCENE_OT_varwin_apply_lighting_preset(bpy.types.Operator):
+    """Применить готовый пресет освещения сцены"""
+    bl_idname = "scene.varwin_apply_lighting_preset"
+    bl_label = "Применить пресет освещения"
+
+    preset: bpy.props.EnumProperty(
+        items=[
+            ('OUTDOOR', "Солнечный день (Улица)", "Яркое солнце, прозрачные мягкие тени и небесный свет"),
+            ('INDOOR_BRIGHT', "Светлый интерьер", "Равномерное светлое заполнение комнат без темных углов"),
+            ('DRAMATIC', "Атмосферный / Контрастный", "Контрастный свет для подземелий и мистических сцен"),
+            ('STUDIO', "Студия / Равномерный", "Мягкий всенаправленный студийный свет"),
+        ]
+    )
+
+    def execute(self, context):
+        sp = getattr(context.scene, 'varwin_scene', None)
+        if not sp:
+            return {'CANCELLED'}
+        if self.preset == 'OUTDOOR':
+            sp.light_intensity = 1.2
+            sp.light_color = (1.0, 0.98, 0.92)
+            sp.light_shadows = 'SOFT'
+            sp.shadow_strength = 0.45
+            sp.ambient_intensity = 0.65
+            sp.ambient_color = (0.65, 0.70, 0.78)
+        elif self.preset == 'INDOOR_BRIGHT':
+            sp.light_intensity = 0.8
+            sp.light_color = (1.0, 0.96, 0.90)
+            sp.light_shadows = 'NONE'
+            sp.shadow_strength = 0.35
+            sp.ambient_intensity = 0.85
+            sp.ambient_color = (0.75, 0.75, 0.75)
+        elif self.preset == 'DRAMATIC':
+            sp.light_intensity = 1.4
+            sp.light_color = (1.0, 0.90, 0.75)
+            sp.light_shadows = 'SOFT'
+            sp.shadow_strength = 0.70
+            sp.ambient_intensity = 0.40
+            sp.ambient_color = (0.40, 0.42, 0.50)
+        elif self.preset == 'STUDIO':
+            sp.light_intensity = 0.6
+            sp.light_color = (1.0, 1.0, 1.0)
+            sp.light_shadows = 'NONE'
+            sp.shadow_strength = 0.25
+            sp.ambient_intensity = 0.95
+            sp.ambient_color = (0.80, 0.80, 0.80)
+        self.report({'INFO'}, f"Применен пресет света: {self.preset}")
         return {'FINISHED'}
 
 
@@ -1114,6 +1198,7 @@ classes = (
     OBJECT_OT_varwin_separate_by_material,
     OBJECT_OT_varwin_join_selected,
     OBJECT_OT_varwin_apply_preset,
+    SCENE_OT_varwin_apply_lighting_preset,
     VARWIN_OT_switch_to_properties,
     VARWIN_OT_install_dependencies,
     OBJECT_PT_varwin_object,
