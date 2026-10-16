@@ -91,16 +91,10 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
 
     obj = root_obj
 
-    # Select base template according to chosen collider
+    # Use convex.vwo as the universal clean base template (single mesh, single renderer, no extraneous UI screens/TMP)
+    # The mesh itself provides authentic geometry and collision.
+    template_name = 'convex.vwo'
     collider_type = getattr(props, 'collider_type', 'CONVEX')
-    if collider_type == 'SPHERE':
-        template_name = 'sphere.vwo'
-    elif collider_type == 'CAPSULE':
-        template_name = 'capsule.vwo'
-    elif collider_type == 'BOX':
-        template_name = 'box.vwo'
-    else:  # CONVEX or NONE
-        template_name = 'convex.vwo'
 
     template_path = os.path.join(templates_dir, template_name)
     if not os.path.isfile(template_path):
