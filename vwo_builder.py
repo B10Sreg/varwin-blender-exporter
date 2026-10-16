@@ -656,34 +656,39 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
     selected_only = getattr(scene_props, 'selected_only', False)
     mesh_info = extract_scene_geometry(scene, selected_only=selected_only)
 
-    # 1.1. Extract Point Lights from scene
+    # 1.1. Extract Point Lights from scene (if enabled)
+    export_lights = getattr(scene_props, 'export_scene_lights', False)
     scene_point_lights = []
-    for obj in scene.objects:
-        if obj.type == 'LIGHT' and obj.data and obj.data.type == 'POINT' and not obj.hide_get():
-            loc = obj.matrix_world.translation if hasattr(obj, 'matrix_world') else obj.location
-            # Convert Blender coords (X, Y, Z) to Unity coords (X, Z, Y)
-            ux = float(loc.x)
-            uy = float(loc.z)
-            uz = float(loc.y)
-            col = tuple(float(c) for c in obj.data.color[:3])
-            energy = float(getattr(obj.data, 'energy', 25.0))
-            intensity = min(8.0, max(0.8, energy / 15.0 if energy > 15.0 else 1.8))
-            cutoff = getattr(obj.data, 'cutoff_distance', 0.0)
-            range_val = float(cutoff) if cutoff > 0.5 else min(12.0, max(5.0, (energy ** 0.5) * 1.5))
-            scene_point_lights.append({
-                'name': obj.name,
-                'pos': (ux, uy, uz),
-                'color': col,
-                'intensity': intensity,
-                'range': range_val
-            })
+    if export_lights:
+        for obj in scene.objects:
+            if obj.type == 'LIGHT' and obj.data and obj.data.type == 'POINT' and not obj.hide_get():
+                loc = obj.matrix_world.translation if hasattr(obj, 'matrix_world') else obj.location
+                # Convert Blender coords (X, Y, Z) to Unity coords (X, Z, Y)
+                ux = float(loc.x)
+                uy = float(loc.z)
+                uz = float(loc.y)
+                col = tuple(float(c) for c in obj.data.color[:3])
+                # Blender Point lights use Watts (e.g. 100W - 280W). Unity Point lights expect intensity in 0.5 - 2.5 range
+                energy = float(getattr(obj.data, 'energy', 25.0))
+                # Scale: 100W in Blender ~ 0.5 - 1.2 in Unity realtime
+                intensity = max(0.1, min(2.0, (energy / 150.0) if energy > 10.0 else (energy / 15.0)))
+                cutoff = getattr(obj.data, 'cutoff_distance', 0.0)
+                range_val = float(cutoff) if cutoff > 0.5 else min(10.0, max(3.0, (energy ** 0.5) * 0.75))
+                scene_point_lights.append({
+                    'name': obj.name,
+                    'pos': (ux, uy, uz),
+                    'color': col,
+                    'intensity': intensity,
+                    'range': range_val
+                })
 
-    # 1.2. Extract Sun Light if present in scene
-    sun_obj = next((o for o in scene.objects if o.type == 'LIGHT' and o.data and o.data.type == 'SUN' and not o.hide_get()), None)
+    # 1.2. Extract Sun Light if present in scene (and export_lights is enabled)
+    sun_obj = next((o for o in scene.objects if o.type == 'LIGHT' and o.data and o.data.type == 'SUN' and not o.hide_get()), None) if export_lights else None
     sun_rot_quat = None
     if sun_obj:
         sun_color = tuple(float(c) for c in sun_obj.data.color[:3])
-        sun_intensity = float(getattr(sun_obj.data, 'energy', 1.0))
+        # In Blender, sun energy is in lux or W/m² (often 1.0 - 5.0). Clamp to max 2.0 for Unity
+        sun_intensity = min(2.0, max(0.0, float(getattr(sun_obj.data, 'energy', 1.0))))
         try:
             import mathutils
             b_dir = (sun_obj.matrix_world.to_3x3() @ mathutils.Vector((0.0, 0.0, -1.0))).normalized()

@@ -463,6 +463,11 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     )
 
     # Export & Installation
+    export_scene_lights: bpy.props.BoolProperty(
+        name="Экспортировать источники света",
+        default=False,
+        description="Переносить ли источники света (Point Lights / Sun) из Blender в шаблон сцены Varwin (по умолчанию выключено во избежание пересвета интерьеров)"
+    )
     embed_textures: bpy.props.BoolProperty(
         name="Внедрять текстуры (PBR)",
         default=True,

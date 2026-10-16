@@ -262,6 +262,7 @@ def draw_varwin_scene_ui(layout, context, scene, scene_props):
     # 4. Environment & Lighting
     box_env = layout.box()
     box_env.label(text="4. Освещение сцены и тени", icon='LIGHT_SUN')
+    box_env.prop(scene_props, "export_scene_lights")
     box_env.prop(scene_props, "light_intensity")
     box_env.prop(scene_props, "light_color")
     box_env.prop(scene_props, "light_shadows")
@@ -591,6 +592,11 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
     shadow_strength: bpy.props.FloatProperty(name="Плотность теней", default=0.45, min=0.0, max=1.0)
     ambient_intensity: bpy.props.FloatProperty(name="Яркость окружения (эмбиент)", default=0.70, min=0.0, max=3.0)
     ambient_color: bpy.props.FloatVectorProperty(name="Цвет рассеянного света", subtype='COLOR', default=(0.68, 0.70, 0.75))
+    export_scene_lights: bpy.props.BoolProperty(
+        name="Экспорт источников света",
+        default=False,
+        description="Переносить ли источники света из Blender в шаблон Varwin (по умолчанию выключено во избежание пересвета интерьеров)"
+    )
     generate_preview: bpy.props.BoolProperty(name="Создать превью", default=True)
 
     def invoke(self, context, event):
@@ -608,6 +614,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             self.shadow_strength = getattr(sp, 'shadow_strength', 0.45)
             self.ambient_intensity = getattr(sp, 'ambient_intensity', 0.70)
             self.ambient_color = getattr(sp, 'ambient_color', (0.68, 0.70, 0.75))
+            self.export_scene_lights = getattr(sp, 'export_scene_lights', False)
             self.generate_preview = sp.generate_preview
 
         env_export_dir = os.environ.get("VARWIN_DEFAULT_EXPORT_DIR", "").strip()
@@ -645,6 +652,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
 
         box_env = layout.box()
         box_env.label(text="Освещение и тени", icon='LIGHT_SUN')
+        box_env.prop(self, "export_scene_lights")
         box_env.prop(self, "light_intensity")
         box_env.prop(self, "light_color")
         box_env.prop(self, "light_shadows")
@@ -674,6 +682,7 @@ class SCENE_OT_varwin_export_vwt(bpy.types.Operator, ExportHelper):
             sp.shadow_strength = self.shadow_strength
             sp.ambient_intensity = self.ambient_intensity
             sp.ambient_color = self.ambient_color
+            sp.export_scene_lights = self.export_scene_lights
             sp.generate_preview = self.generate_preview
 
         try:
