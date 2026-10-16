@@ -119,12 +119,15 @@ def install_vwo_to_varwin(vwo_filepath: str):
         user_row = cur.fetchone()
         owner_id = user_row[0] if user_row else 3
 
+        disable_logic = 1 if install_meta.get('DisableSceneLogic', False) else 0
+
         if existing:
             # Update existing
             cur.execute("""
                 UPDATE objects SET
                     guid = ?, root_guid = ?,
                     name = ?, description = ?, config = ?, author = ?,
+                    disable_scene_logic = ?,
                     owned_by = ?, updated_by = ?,
                     mobile_ready = 1, linux_ready = 1, size = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
@@ -134,6 +137,7 @@ def install_vwo_to_varwin(vwo_filepath: str):
                 json.dumps(install_meta.get('Description', {})),
                 json.dumps(install_meta.get('Config', {})),
                 json.dumps(install_meta.get('Author', {})),
+                disable_logic,
                 owner_id, owner_id,
                 os.path.getsize(vwo_filepath),
                 existing[0]
@@ -159,7 +163,7 @@ def install_vwo_to_varwin(vwo_filepath: str):
                 1,
                 install_meta.get('SdkVersion', '18.5.442'),
                 0,
-                0,
+                disable_logic,
                 json.dumps(install_meta.get('Name', {})),
                 json.dumps(install_meta.get('Description', {})),
                 install_meta.get('ModuleName', ''),

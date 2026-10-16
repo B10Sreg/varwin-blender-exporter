@@ -96,6 +96,15 @@ def extract_material_properties(mat):
                             texture = extract_image_texture(from_node.image)
                             # When texture is present, use pure neutral white (1,1,1,1) tint so texture colors shine naturally
                             base_color = (1.0, 1.0, 1.0, 1.0)
+                        elif from_node and from_node.type == 'VALTORGB' and getattr(from_node, 'color_ramp', None):
+                            ramp = from_node.color_ramp
+                            try:
+                                avg_r = sum(e.color[0] for e in ramp.elements) / len(ramp.elements)
+                                avg_g = sum(e.color[1] for e in ramp.elements) / len(ramp.elements)
+                                avg_b = sum(e.color[2] for e in ramp.elements) / len(ramp.elements)
+                                base_color = (float(avg_r), float(avg_g), float(avg_b), 1.0)
+                            except Exception:
+                                base_color = tuple(float(c) for c in base_color_input.default_value[:4])
                         else:
                             base_color = tuple(float(c) for c in mat.diffuse_color[:4])
                     else:

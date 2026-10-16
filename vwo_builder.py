@@ -308,9 +308,13 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 col = m_info.get('color', (0.8, 0.8, 0.8, 1.0))
                 ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
 
-                # Clean authentic RGB colors from Blender materials
-                # Material protection against Varwin VisualizationBehaviour is handled cleanly
-                # at the engine level via AddBehavioursAtRuntime=0 and DisableSceneLogic=1
+                # Dual-layer protection against Varwin's VisualizationBehaviour:
+                # 1) Engine level: AddBehavioursAtRuntime=0 & DisableSceneLogic=1
+                # 2) Material level: apply tiny delta (0.001) so CanAddBehaviour (materials.All(m => m.color == firstColor)) returns False!
+                if preserve and has_multiple_or_textures:
+                    delta = 0.001 * (i % 7 + 1)
+                    col = (col[0], max(0.0, col[1] - delta), col[2], col[3] if len(col) > 3 else 1.0)
+
                 for c in tree.get('m_SavedProperties', {}).get('m_Colors', []):
                     if c[0] == '_Color':
                         c[1]['r'] = float(col[0])
@@ -434,8 +438,12 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 tree['m_Drag'] = float(getattr(props, 'drag', 0.0))
                 tree['m_AngularDrag'] = float(getattr(props, 'angular_drag', 0.05))
                 tree['m_Constraints'] = int(constraints)
-                tree['m_CollisionDetection'] = int(getattr(props, 'collision_detection', 0))
-                tree['m_Interpolate'] = int(getattr(props, 'interpolate', 0))
+                cd_val = getattr(props, 'collision_detection', 0)
+                cd_map = {'DISCRETE': 0, 'CONTINUOUS': 1, 'CONTINUOUS_DYNAMIC': 2, 'CONTINUOUS_SPECULATIVE': 3}
+                tree['m_CollisionDetection'] = cd_map.get(str(cd_val).upper(), int(cd_val) if str(cd_val).isdigit() else 0)
+                interp_val = getattr(props, 'interpolate', 0)
+                interp_map = {'NONE': 0, 'INTERPOLATE': 1, 'EXTRAPOLATE': 2}
+                tree['m_Interpolate'] = interp_map.get(str(interp_val).upper(), int(interp_val) if str(interp_val).isdigit() else 0)
                 o.save_typetree(tree)
                 break
 
