@@ -400,26 +400,26 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 o.save_typetree(tree)
                 break
 
-            # C.2b. Register all cloned materials and textures in AssetBundle m_PreloadTable and update container preloadSize
-            # This ensures Unity preloads all material slots and textures when instantiating the prefab, preventing fallbacks to slot 0
-            for o in env.objects:
-                if o.type.name == 'AssetBundle':
-                    tree = o.read_typetree()
-                    preload_table = tree.get('m_PreloadTable', [])
-                    existing_pids = {entry.get('m_PathID') for entry in preload_table}
-                    for pid in mat_pids + tex_pids:
-                        if pid not in existing_pids:
-                            preload_table.append({'m_FileID': 0, 'm_PathID': pid})
-                    tree['m_PreloadTable'] = preload_table
+        # C.2b. Register all cloned materials and textures in AssetBundle m_PreloadTable and update container preloadSize
+        # This ensures Unity preloads all material slots and textures when instantiating the prefab, preventing fallbacks to slot 0
+        for o in env.objects:
+            if o.type.name == 'AssetBundle':
+                tree = o.read_typetree()
+                preload_table = tree.get('m_PreloadTable', [])
+                existing_pids = {entry.get('m_PathID') for entry in preload_table}
+                for pid in mat_pids + tex_pids:
+                    if pid not in existing_pids:
+                        preload_table.append({'m_FileID': 0, 'm_PathID': pid})
+                tree['m_PreloadTable'] = preload_table
 
-                    total_preloads = len(preload_table)
-                    new_container = []
-                    for path, info in tree.get('m_Container', []):
-                        info['preloadSize'] = total_preloads
-                        new_container.append((path, info))
-                    tree['m_Container'] = new_container
-                    o.save_typetree(tree)
-                    break
+                total_preloads = len(preload_table)
+                new_container = []
+                for path, info in tree.get('m_Container', []):
+                    info['preloadSize'] = total_preloads
+                    new_container.append((path, info))
+                tree['m_Container'] = new_container
+                o.save_typetree(tree)
+                break
 
         # C.3. Reset Transform to identity
         for o in env.objects:
