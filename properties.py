@@ -327,6 +327,33 @@ class VarwinObjectProperties(bpy.types.PropertyGroup):
         default=True,
         description="Автоматически извлекать и упаковывать текстуры материалов (Image Texture) в Unity AssetBundle"
     )
+    bake_resolution: bpy.props.EnumProperty(
+        name="Разрешение запекания",
+        items=[
+            ("512", "512 x 512 (Быстро / Mobile)", "Облегченная текстура для оптимизации под VR Quest 2"),
+            ("1024", "1024 x 1024 (Стандарт)", "Оптимальный баланс четкости и памяти"),
+            ("2048", "2048 x 2048 (Высокое качество)", "Четкая текстура для детальных моделей"),
+            ("4096", "4096 x 4096 (Ультра / Hero)", "Максимальная детализация для ключевых пропсов")
+        ],
+        default="1024",
+        description="Разрешение генерируемой текстуры в пикселях"
+    )
+    bake_channel: bpy.props.EnumProperty(
+        name="Тип текстуры",
+        items=[
+            ("DIFFUSE", "Base Color (Цвет)", "Запечь цвет и рисунок нод (ColorRamp, Noise, Voronoi и др.)"),
+            ("ROUGHNESS", "Roughness (Шероховатость)", "Запечь карту глянца / шероховатости"),
+            ("NORMAL", "Normal Map (Рельеф)", "Запечь карту высот / нормалей"),
+            ("COMBINED", "Combined (Полный свет + цвет)", "Запечь полный цвет с освещением и тенями")
+        ],
+        default="DIFFUSE",
+        description="Какую карту запечь в растровый файл PNG"
+    )
+    bake_auto_apply: bpy.props.BoolProperty(
+        name="Привязать к материалу",
+        default=True,
+        description="Автоматически подставить запеченную текстуру в ноду Principled BSDF объекта для мгновенного экспорта в .vwo"
+    )
     preserve_materials: bpy.props.BoolProperty(
         name="Защита материалов от оверрайда Varwin",
         default=True,

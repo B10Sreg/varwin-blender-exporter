@@ -104,6 +104,19 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_mat_opt.prop(props, "embed_textures")
     box_mat_opt.prop(props, "preserve_materials")
 
+    # Procedural to file texture baking (Vad / BIOS request)
+    box_bake = box_mat_opt.box()
+    box_bake.label(text="Сделать текстуру файлом (Bake PBR):", icon='RENDER_STILL')
+    row_b_params = box_bake.row(align=True)
+    row_b_params.prop(props, "bake_channel", text="")
+    row_b_params.prop(props, "bake_resolution", text="")
+    box_bake.prop(props, "bake_auto_apply")
+
+    row_bake_btn = box_bake.row(align=True)
+    row_bake_btn.scale_y = 1.3
+    row_bake_btn.operator("object.varwin_bake_texture", text="Запечь текстуру в PNG", icon='FILE_IMAGE')
+    row_bake_btn.operator("object.varwin_open_textures_folder", text="", icon='FILE_FOLDER')
+
     # 3. Physics & Rigidbody
     box_phys = layout.box()
     box_phys.label(text="3. Физика Rigidbody (PhysX)", icon='PHYSICS')
@@ -1246,6 +1259,76 @@ class OBJECT_OT_varwin_join_selected(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class OBJECT_OT_varwin_bake_texture(bpy.types.Operator):
+    """Запекает процедурные ноды материалов активного объекта в текстурный файл PNG"""
+    bl_idname = "object.varwin_bake_texture"
+    bl_label = "Запечь текстуру"
+    bl_description = "Запекает процедурные шейдеры (Noise, Voronoi, ColorRamp и др.) в отдельный PNG файл на диске и опционально связывает с Principled BSDF"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return bool(obj and obj.type == 'MESH' and obj.data.materials and any(obj.data.materials))
+
+    def execute(self, context):
+        obj = context.active_object
+        props = getattr(obj, 'varwin', None)
+        if not props:
+            self.report({'ERROR'}, "Свойства Varwin для объекта не найдены!")
+            return {'CANCELLED'}
+
+        res = int(getattr(props, 'bake_resolution', '1024'))
+        channel = getattr(props, 'bake_channel', 'DIFFUSE')
+        auto_apply = getattr(props, 'bake_auto_apply', True)
+
+        from .texture_baker import bake_object_texture
+        res_data = bake_object_texture(
+            obj=obj,
+            resolution=res,
+            bake_type=channel,
+            auto_apply=auto_apply
+        )
+
+        if not res_data.get('success'):
+            self.report({'ERROR'}, res_data.get('error', 'Неизвестная ошибка запекания'))
+            return {'CANCELLED'}
+
+        filepath = res_data.get('filepath', '')
+        self.report({'INFO'}, f"Текстура успешно запечена в файл: {filepath}")
+        return {'FINISHED'}
+
+
+class OBJECT_OT_varwin_open_textures_folder(bpy.types.Operator):
+    """Открывает папку с сохраненными текстурами в проводнике системы"""
+    bl_idname = "object.varwin_open_textures_folder"
+    bl_label = "Открыть папку текстур"
+    bl_description = "Открывает директорию с текстурами (//textures или Рабочий стол) в системном файловом менеджере"
+
+    def execute(self, context):
+        import subprocess, sys
+        if bpy.data.is_saved:
+            target_dir = bpy.path.abspath("//textures")
+        else:
+            home = os.path.expanduser("~")
+            desktop = os.path.join(home, "Desktop")
+            target_dir = desktop if os.path.isdir(desktop) else home
+
+        os.makedirs(target_dir, exist_ok=True)
+        try:
+            if sys.platform == 'win32':
+                os.startfile(target_dir)
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', target_dir])
+            else:
+                subprocess.Popen(['xdg-open', target_dir])
+            self.report({'INFO'}, f"Открыта папка: {target_dir}")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'WARNING'}, f"Не удалось открыть папку: {e}")
+            return {'CANCELLED'}
+
+
 classes = (
     OBJECT_OT_varwin_export,
     SCENE_OT_varwin_export_vwt,
@@ -1253,6 +1336,8 @@ classes = (
     SCENE_OT_varwin_quick_export_vwt,
     OBJECT_OT_varwin_separate_by_material,
     OBJECT_OT_varwin_join_selected,
+    OBJECT_OT_varwin_bake_texture,
+    OBJECT_OT_varwin_open_textures_folder,
     OBJECT_OT_varwin_apply_preset,
     SCENE_OT_varwin_apply_lighting_preset,
     VARWIN_OT_switch_to_properties,

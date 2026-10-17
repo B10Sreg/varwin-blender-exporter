@@ -19,6 +19,7 @@ _submodules = [
     "preview_generator",
     "installer",
     "properties",
+    "texture_baker",
     "vwo_builder",
     "ui"
 ]
