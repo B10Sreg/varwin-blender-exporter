@@ -198,37 +198,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         # B. Assign unique bundle name & container asset path
         new_bname = f"{prefix}{clean_name}_{clean_root}"
         for o in env.objects:
-            if o.type.name == 'AssetBundle':
-                tree = o.read_typetree()
-                tree['m_Name'] = new_bname
-                tree['m_AssetBundleName'] = new_bname
-
-                prefab_info = None
-                for path, info in tree['m_Container']:
-                    if path.endswith('.prefab'):
-                        prefab_info = info
-                        break
-                if not prefab_info and tree['m_Container']:
-                    prefab_info = tree['m_Container'][0][1]
-
-                container_entries = {
-                    new_prefab_path: prefab_info,
-                    f"assets/objects/{clean_name}_{clean_root}/{clean_name}.prefab": prefab_info,
-                    f"{clean_name}.prefab": prefab_info,
-                    f"{clean_name}": prefab_info,
-                    f"{safe_asset_name}.prefab": prefab_info,
-                    f"{safe_asset_name}": prefab_info,
-                }
-                container_entries[new_prefab_path.lower()] = prefab_info
-
-                for path, info in tree['m_Container']:
-                    if not path.endswith('.prefab'):
-                        new_p = path.lower().replace('vcylinder', f'{clean_name}_{clean_root}')
-                        container_entries[new_p] = info
-
-                tree['m_Container'] = sorted(container_entries.items(), key=lambda x: x[0])
-                o.save_typetree(tree)
-            elif o.type.name == 'GameObject':
+            if o.type.name == 'GameObject':
                 data = o.read()
                 go_name = getattr(data, 'm_Name', getattr(data, 'name', ''))
                 if go_name in ('VCylinder', 'VSphere', 'CapsuleCollider', 'TutorialDisplay', 'Woodenoldtable', safe_asset_name):
@@ -400,11 +370,25 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 o.save_typetree(tree)
                 break
 
-        # C.2b. Register all cloned materials and textures in AssetBundle m_PreloadTable and update container preloadSize
-        # This ensures Unity preloads all material slots and textures when instantiating the prefab, preventing fallbacks to slot 0
+        # C.2b. Comprehensive patch of AssetBundle (m_Name, m_PreloadTable, and m_Container aliases)
+        # This registers cloned materials/textures for eager preloading AND registers both the original
+        # template path and custom alias paths (e.g. assets/.../name.prefab, name.prefab) so Varwin can
+        # always instantiate the prefab regardless of whether it looks it up by AssetName or template key.
         for o in env.objects:
             if o.type.name == 'AssetBundle':
                 tree = o.read_typetree()
+                tree['m_Name'] = new_bname
+                tree['m_AssetBundleName'] = new_bname
+
+                prefab_info = None
+                for path, info in tree.get('m_Container', []):
+                    if path.endswith('.prefab'):
+                        prefab_info = info
+                        break
+                if not prefab_info and tree.get('m_Container'):
+                    prefab_info = tree['m_Container'][0][1]
+
+                # Preload table for multi-material and textures
                 preload_table = tree.get('m_PreloadTable', [])
                 existing_pids = {entry.get('m_PathID') for entry in preload_table}
                 for pid in mat_pids + tex_pids:
@@ -413,11 +397,24 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 tree['m_PreloadTable'] = preload_table
 
                 total_preloads = len(preload_table)
-                new_container = []
-                for path, info in tree.get('m_Container', []):
+                if prefab_info:
+                    prefab_info['preloadSize'] = total_preloads
+
+                # Build comprehensive container entries preserving existing template keys while adding aliases
+                container_entries = dict(tree.get('m_Container', []))
+                for path, info in list(container_entries.items()):
                     info['preloadSize'] = total_preloads
-                    new_container.append((path, info))
-                tree['m_Container'] = new_container
+
+                if prefab_info:
+                    container_entries[new_prefab_path] = prefab_info
+                    container_entries[new_prefab_path.lower()] = prefab_info
+                    container_entries[f"assets/objects/{clean_name}_{clean_root}/{clean_name}.prefab"] = prefab_info
+                    container_entries[f"{clean_name}.prefab"] = prefab_info
+                    container_entries[f"{clean_name}"] = prefab_info
+                    container_entries[f"{safe_asset_name}.prefab"] = prefab_info
+                    container_entries[f"{safe_asset_name}"] = prefab_info
+
+                tree['m_Container'] = sorted(container_entries.items(), key=lambda x: x[0])
                 o.save_typetree(tree)
                 break
 
