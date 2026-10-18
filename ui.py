@@ -164,7 +164,10 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_col.prop(props, "collider_type")
     box_col.prop(props, "is_trigger")
 
-    if props.collider_type != 'NONE':
+    if props.collider_type == 'MESH':
+        box_col.label(text="✓ Полый точный коллайдер (Concave): огибает стены и пол!", icon='CHECKMARK')
+        box_col.label(text="ℹ️ Внутри свободно для ходьбы игрока в VR / Desktop.", icon='INFO')
+    elif props.collider_type != 'NONE':
         box_col.prop(props, "auto_fit_bounds")
         if not props.auto_fit_bounds:
             if props.collider_type == 'BOX':
@@ -206,6 +209,8 @@ def draw_varwin_object_ui(layout, context, obj, props):
     row_p3 = box_presets.row(align=True)
     op5 = row_p3.operator("object.varwin_apply_preset", text="Площадка телепорта")
     op5.preset = 'TELEPORT_FLOOR'
+    op6 = row_p3.operator("object.varwin_apply_preset", text="🏛️ Помещение (Ходьба внутри)")
+    op6.preset = 'ROOM_ENVIRONMENT'
 
     # 7. Export Options
     layout.separator()
@@ -385,7 +390,8 @@ class OBJECT_OT_varwin_export(bpy.types.Operator, ExportHelper):
     collider_type: bpy.props.EnumProperty(
         name="Коллайдер",
         items=[
-            ("CONVEX", "Convex Mesh", "Выпуклый меш"),
+            ("CONVEX", "Convex Mesh (Выпуклый)", "Выпуклый меш для отдельных предметов"),
+            ("MESH", "Mesh Collider (Помещение / Полый)", "Точный полигональный вогнутый меш (для помещений и зданий)"),
             ("BOX", "Box Collider", "Параллелепипед"),
             ("SPHERE", "Sphere Collider", "Сфера"),
             ("CAPSULE", "Capsule Collider", "Капсула"),
@@ -829,6 +835,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             ('STATIC_PROP', "Статичный объект", "Архитектура и декорации, не сдвигаемые физикой"),
             ('TRIGGER_ZONE', "Сенсор / Триггер", "Невидимая или прозрачная зона событий"),
             ('TELEPORT_FLOOR', "Площадка телепортации", "Поверхность пола, на которую разрешена телепортация"),
+            ('ROOM_ENVIRONMENT', "Помещение / Здание (Ходьба внутри)", "Огромная комната или архитектура: полый точный меш-коллайдер, кинематика, зона телепортации"),
         ]
     )
 
@@ -839,6 +846,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
         p = obj.varwin
 
         if self.preset == 'DYNAMIC_LIGHT':
+            p.collider_type = 'CONVEX'
             p.use_rigidbody = True
             p.mass = 1.0
             p.use_gravity = True
@@ -852,6 +860,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.is_obstacle = True
             p.teleport_area = False
         elif self.preset == 'DYNAMIC_HEAVY':
+            p.collider_type = 'CONVEX'
             p.use_rigidbody = True
             p.mass = 25.0
             p.use_gravity = True
@@ -865,6 +874,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.is_obstacle = True
             p.teleport_area = False
         elif self.preset == 'STATIC_PROP':
+            p.collider_type = 'CONVEX'
             p.use_rigidbody = True
             p.mass = 1.0
             p.use_gravity = False
@@ -876,6 +886,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.is_obstacle = True
             p.teleport_area = False
         elif self.preset == 'TRIGGER_ZONE':
+            p.collider_type = 'BOX'
             p.use_rigidbody = True
             p.mass = 1.0
             p.use_gravity = False
@@ -887,6 +898,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.is_obstacle = False
             p.teleport_area = False
         elif self.preset == 'TELEPORT_FLOOR':
+            p.collider_type = 'BOX'
             p.use_rigidbody = True
             p.mass = 1.0
             p.use_gravity = False
@@ -896,6 +908,18 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.touchable = False
             p.usable = False
             p.is_obstacle = False
+            p.teleport_area = True
+        elif self.preset == 'ROOM_ENVIRONMENT':
+            p.collider_type = 'MESH'
+            p.use_rigidbody = True
+            p.mass = 1000.0
+            p.use_gravity = False
+            p.is_kinematic = True
+            p.is_trigger = False
+            p.grabbable = False
+            p.touchable = True
+            p.usable = False
+            p.is_obstacle = True
             p.teleport_area = True
 
         self.report({'INFO'}, f"Применен пресет: {self.preset}")
@@ -982,6 +1006,9 @@ def draw_varwin_presets_ui(layout, context, obj):
 
     op5 = col.operator("object.varwin_apply_preset", text="🎯 Площадка телепортации (Зона телепорта)", icon='TRACKING')
     op5.preset = 'TELEPORT_FLOOR'
+
+    op6 = col.operator("object.varwin_apply_preset", text="🏛️ Помещение / Зал (Ходьба внутри, Полый коллайдер)", icon='HOME')
+    op6.preset = 'ROOM_ENVIRONMENT'
 
 
 def draw_varwin_system_ui(layout, context):

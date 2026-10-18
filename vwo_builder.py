@@ -428,12 +428,18 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 break
 
         # D. In-place patch Rigidbody
+        is_concave_mesh = (collider_type in ('MESH', 'MESH_CONCAVE'))
         for o in env.objects:
             if o.type.name == 'Rigidbody':
                 tree = o.read_typetree()
                 tree['m_Mass'] = float(getattr(props, 'mass', 1.0))
-                tree['m_UseGravity'] = bool(getattr(props, 'use_gravity', True))
-                tree['m_IsKinematic'] = bool(getattr(props, 'is_kinematic', False)) if getattr(props, 'use_rigidbody', True) else True
+                if is_concave_mesh:
+                    # Unity PhysX strictly forbids non-convex MeshCollider with non-kinematic Rigidbody
+                    tree['m_UseGravity'] = False
+                    tree['m_IsKinematic'] = True
+                else:
+                    tree['m_UseGravity'] = bool(getattr(props, 'use_gravity', True))
+                    tree['m_IsKinematic'] = bool(getattr(props, 'is_kinematic', False)) if getattr(props, 'use_rigidbody', True) else True
                 tree['m_Drag'] = float(getattr(props, 'drag', 0.0))
                 tree['m_AngularDrag'] = float(getattr(props, 'angular_drag', 0.05))
                 tree['m_Constraints'] = int(constraints)
@@ -450,9 +456,17 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         for o in env.objects:
             if o.type.name == 'MeshCollider':
                 tree = o.read_typetree()
-                tree['m_Convex'] = True
+                if is_concave_mesh:
+                    # Non-convex (hollow) mesh collider: hugs walls, floor, and ceiling, leaving interior completely free for player walking!
+                    tree['m_Convex'] = False
+                    tree['m_Enabled'] = True
+                elif collider_type == 'CONVEX':
+                    tree['m_Convex'] = True
+                    tree['m_Enabled'] = True
+                else:
+                    tree['m_Convex'] = False
+                    tree['m_Enabled'] = False
                 tree['m_IsTrigger'] = bool(getattr(props, 'is_trigger', False))
-                tree['m_Enabled'] = (collider_type == 'CONVEX')
                 o.save_typetree(tree)
             elif o.type.name == 'BoxCollider':
                 tree = o.read_typetree()
