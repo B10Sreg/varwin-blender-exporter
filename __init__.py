@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Varwin VWO & Scene Exporter",
     "author": "Antigravity & B10Sreg",
-    "version": (1, 7, 2),
+    "version": (1, 8, 0),
     "blender": (4, 2, 0),
     "location": "Properties > Object / Scene | 3D Viewport > Sidebar > Varwin | File > Export",
     "description": "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwst) в Varwin XRMS со всеми возможностями Unity SDK (текстуры, материалы, Rigidbody, Colliders, VR Interaction, Spawns)",
@@ -18,6 +18,7 @@ _submodules = [
     "mesh_extractor",
     "preview_generator",
     "installer",
+    "updater",
     "properties",
     "texture_baker",
     "vwo_builder",
@@ -32,6 +33,7 @@ for _submod in _submodules:
 import bpy
 from . import properties
 from . import ui
+from . import updater
 
 def menu_func_export(self, context):
     self.layout.operator(ui.OBJECT_OT_varwin_export.bl_idname, text="Varwin Object (.vwo)")
@@ -50,6 +52,7 @@ def cleanup_export_menu():
                 pass
 
 def register():
+    updater.register()
     properties.register()
     ui.register()
     cleanup_export_menu()
@@ -59,6 +62,7 @@ def unregister():
     cleanup_export_menu()
     ui.unregister()
     properties.unregister()
+    updater.unregister()
 
 if __name__ == "__main__":
     register()

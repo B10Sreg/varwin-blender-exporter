@@ -5,6 +5,7 @@ from bpy_extras.io_utils import ExportHelper
 from .vwo_builder import build_vwo_package, build_vwt_package
 from .installer import get_varwin_data_path
 from .deps import VARWIN_OT_install_dependencies, get_dependency_status
+from .updater import draw_updater_ui
 
 def get_target_mesh_object(context, target_name: str = None):
     """Safely retrieves a mesh object from context, name or scene fallback."""
@@ -1100,6 +1101,9 @@ def draw_varwin_unified_ui(layout, context):
     elif tab == 'SYSTEM':
         draw_varwin_system_ui(layout, context)
 
+    layout.separator()
+    draw_updater_ui(layout)
+
 
 # ==============================================================================
 # PROPERTIES EDITOR & 3D VIEWPORT PANELS
@@ -1172,6 +1176,8 @@ class OBJECT_PT_varwin_object(bpy.types.Panel):
         obj = get_target_mesh_object(context)
         if obj and hasattr(obj, 'varwin'):
             draw_varwin_object_ui(self.layout, context, obj, obj.varwin)
+            self.layout.separator()
+            draw_updater_ui(self.layout)
 
 
 class SCENE_PT_varwin_scene(bpy.types.Panel):
@@ -1186,6 +1192,8 @@ class SCENE_PT_varwin_scene(bpy.types.Panel):
         scene = context.scene
         if scene and hasattr(scene, 'varwin_scene'):
             draw_varwin_scene_ui(self.layout, context, scene, scene.varwin_scene)
+            self.layout.separator()
+            draw_updater_ui(self.layout)
 
 
 class OBJECT_OT_varwin_separate_by_material(bpy.types.Operator):
