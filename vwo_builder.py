@@ -14,7 +14,13 @@ except ImportError:
     UnityPy = None
 import copy
 
-from .mesh_extractor import extract_mesh_data, extract_object_geometry, extract_scene_geometry
+from .mesh_extractor import (
+    extract_mesh_data,
+    extract_object_geometry,
+    extract_scene_geometry,
+    generate_box_mesh_data,
+    extract_convex_hull_geometry,
+)
 from .preview_generator import generate_preview_images
 from .installer import install_vwo_to_varwin, install_scene_template_to_varwin
 
@@ -140,6 +146,18 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         capsule_height = props.capsule_height
         capsule_center = {'x': props.capsule_center[0], 'y': props.capsule_center[2], 'z': props.capsule_center[1]}
 
+    # Dedicated PhysX collision mesh:
+    # Unity PhysX strictly limits convex mesh cooking to <= 255 vertices / polygons.
+    # Exceeding 255 vertices causes PhysX cooking failure, missing colliders, and crashes PhysicsBehaviour.
+    col_mesh_data = None
+    if collider_type == 'BOX':
+        col_mesh_data = generate_box_mesh_data(cx, cy, cz, ex, ey, ez)
+    elif collider_type == 'CONVEX':
+        if mesh_info.get('vertex_count', 0) > 200:
+            col_mesh_data = extract_convex_hull_geometry(mesh_objs, root_obj=root_obj, max_verts=64)
+        else:
+            col_mesh_data = None  # Visual mesh is already <= 200 verts, safe for PhysX convex cooking
+
     # Constraints bitmask
     constraints = 0
     if getattr(props, 'freeze_pos_x', False): constraints |= 2
@@ -200,11 +218,13 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         base_go_obj = None
         base_tf_obj = None
         base_mr_obj = None
+        base_mf_obj = None
+        base_mesh_obj = None
         for o in env.objects:
             if o.type.name == 'GameObject':
                 data = o.read()
                 go_name = getattr(data, 'm_Name', getattr(data, 'name', ''))
-                if go_name in ('VCylinder', 'VSphere', 'CapsuleCollider', 'TutorialDisplay', 'Woodenoldtable', safe_asset_name):
+                if go_name in ('VCylinder', 'VSphere', 'CapsuleCollider', 'TutorialDisplay', 'Woodenoldtable', 'VCube', safe_asset_name):
                     tree = o.read_typetree()
                     tree['m_Name'] = safe_asset_name
                     o.save_typetree(tree)
@@ -213,6 +233,10 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 base_tf_obj = o
             elif o.type.name == 'MeshRenderer' and not base_mr_obj:
                 base_mr_obj = o
+            elif o.type.name == 'MeshFilter' and not base_mf_obj:
+                base_mf_obj = o
+            elif o.type.name == 'Mesh' and not base_mesh_obj:
+                base_mesh_obj = o
 
         # C. In-place patch Materials, Textures, and MeshRenderer
         base_mat_obj = None
@@ -334,9 +358,12 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
 
 
 
-        # C.1. In-place patch Mesh
+        # C.1. In-place patch Visual Mesh
+        visual_mesh_pid = None
         for o in env.objects:
             if o.type.name == 'Mesh':
+                base_mesh_obj = o
+                visual_mesh_pid = o.path_id
                 tree = o.read_typetree()
                 tree['m_Name'] = f"{safe_asset_name}_Mesh"
                 tree['m_VertexData']['m_VertexCount'] = mesh_info['vertex_count']
@@ -362,6 +389,39 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 }
                 o.save_typetree(tree)
                 break
+
+        # C.1b. Inject dedicated Collision Mesh if separate from visual mesh (BOX or simplified CONVEX)
+        col_mesh_pid = None
+        if col_mesh_data and base_mesh_obj and target_sf:
+            col_mesh_pid = -9998889
+            col_mesh_obj = copy.copy(base_mesh_obj)
+            col_mesh_obj.path_id = col_mesh_pid
+            ctree = col_mesh_obj.read_typetree()
+            ctree['m_Name'] = f"{safe_asset_name}_ColMesh"
+            ctree['m_VertexData']['m_VertexCount'] = col_mesh_data['vertex_count']
+            ctree['m_VertexData']['m_DataSize'] = col_mesh_data['raw_vertex_data']
+            ctree['m_VertexData']['m_Channels'] = UNITY_48B_CHANNELS
+            ctree['m_IndexBuffer'] = col_mesh_data['raw_index_buffer']
+            ctree['m_IndexFormat'] = col_mesh_data.get('index_format', 0)
+            col_submeshes = col_mesh_data.get('submeshes', [{
+                'firstByte': 0,
+                'indexCount': col_mesh_data['index_count'],
+                'topology': 0,
+                'baseVertex': 0,
+                'firstVertex': 0,
+                'vertexCount': col_mesh_data['vertex_count'],
+                'localAABB': {
+                    'm_Center': col_mesh_data.get('aabb_center', {'x': cx, 'y': cy, 'z': cz}),
+                    'm_Extent': col_mesh_data.get('aabb_extent', {'x': ex, 'y': ey, 'z': ez})
+                }
+            }])
+            ctree['m_SubMeshes'] = col_submeshes
+            ctree['m_LocalAABB'] = {
+                'm_Center': col_mesh_data.get('aabb_center', {'x': cx, 'y': cy, 'z': cz}),
+                'm_Extent': col_mesh_data.get('aabb_extent', {'x': ex, 'y': ey, 'z': ez})
+            }
+            col_mesh_obj.save_typetree(ctree)
+            target_sf.objects[col_mesh_pid] = col_mesh_obj
 
         # C.2. In-place patch MeshRenderer
         for o in env.objects:
@@ -439,16 +499,28 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
             child_mr.save_typetree(mrtree)
             target_sf.objects[child_mr_pid] = child_mr
 
+            child_mf_pid = -9998885
+            child_components = [
+                {'component': {'m_FileID': 0, 'm_PathID': child_tf_pid}},
+                {'component': {'m_FileID': 0, 'm_PathID': child_mr_pid}}
+            ]
+            if base_mf_obj:
+                child_mf = copy.copy(base_mf_obj)
+                child_mf.path_id = child_mf_pid
+                mftree = child_mf.read_typetree()
+                mftree['m_GameObject'] = {'m_FileID': 0, 'm_PathID': -9998883}
+                mftree['m_Mesh'] = {'m_FileID': 0, 'm_PathID': visual_mesh_pid if visual_mesh_pid else base_mf_obj.path_id}
+                child_mf.save_typetree(mftree)
+                target_sf.objects[child_mf_pid] = child_mf
+                child_components.append({'component': {'m_FileID': 0, 'm_PathID': child_mf_pid}})
+
             child_go_pid = -9998883
             child_go = copy.copy(base_go_obj)
             child_go.path_id = child_go_pid
             gotree = child_go.read_typetree()
             gotree['m_Name'] = '__MaterialShield'
             gotree['m_IsActive'] = True
-            gotree['m_Component'] = [
-                {'component': {'m_FileID': 0, 'm_PathID': child_tf_pid}},
-                {'component': {'m_FileID': 0, 'm_PathID': child_mr_pid}}
-            ]
+            gotree['m_Component'] = child_components
             child_go.save_typetree(gotree)
             target_sf.objects[child_go_pid] = child_go
 
@@ -478,10 +550,13 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 if not prefab_info and tree.get('m_Container'):
                     prefab_info = tree['m_Container'][0][1]
 
-                # Preload table for multi-material and textures
+                # Preload table for multi-material, textures, and collision mesh
                 preload_table = tree.get('m_PreloadTable', [])
                 existing_pids = {entry.get('m_PathID') for entry in preload_table}
-                for pid in mat_pids + tex_pids:
+                preload_pids = list(mat_pids) + list(tex_pids)
+                if col_mesh_pid:
+                    preload_pids.append(col_mesh_pid)
+                for pid in preload_pids:
                     if pid not in existing_pids:
                         preload_table.append({'m_FileID': 0, 'm_PathID': pid})
                 tree['m_PreloadTable'] = preload_table
@@ -534,16 +609,34 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 break
 
         # E. In-place patch Colliders
+        active_col_pid = col_mesh_pid if col_mesh_pid else visual_mesh_pid
+        has_box_collider = any(o.type.name == 'BoxCollider' for o in env.objects)
+
         for o in env.objects:
             if o.type.name == 'MeshCollider':
                 tree = o.read_typetree()
+                if active_col_pid:
+                    tree['m_Mesh'] = {'m_FileID': 0, 'm_PathID': active_col_pid}
+
                 if is_concave_mesh:
                     # Non-convex (hollow) mesh collider: hugs walls, floor, and ceiling, leaving interior completely free for player walking!
                     tree['m_Convex'] = False
                     tree['m_Enabled'] = True
+                elif collider_type == 'BOX':
+                    # If template has native BoxCollider, let BoxCollider handle it; otherwise use the 8-vertex box collision mesh!
+                    if has_box_collider:
+                        tree['m_Convex'] = False
+                        tree['m_Enabled'] = False
+                    else:
+                        tree['m_Convex'] = True
+                        tree['m_Enabled'] = True
                 elif collider_type == 'CONVEX':
+                    # Under 255-vertex convex mesh (guaranteed by extract_convex_hull_geometry)
                     tree['m_Convex'] = True
                     tree['m_Enabled'] = True
+                elif collider_type == 'NONE':
+                    tree['m_Convex'] = False
+                    tree['m_Enabled'] = False
                 else:
                     tree['m_Convex'] = False
                     tree['m_Enabled'] = False

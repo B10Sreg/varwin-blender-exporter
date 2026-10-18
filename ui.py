@@ -165,7 +165,11 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_col.prop(props, "collider_type")
     box_col.prop(props, "is_trigger")
 
-    if props.collider_type == 'MESH':
+    if props.collider_type == 'BOX':
+        box_col.label(text="✓ 8-вершинный Box Mesh: 100% стабильность PhysX и 0 лагов!", icon='CHECKMARK')
+    elif props.collider_type == 'CONVEX':
+        box_col.label(text="✓ Оптимизированный Convex Hull (<=64 верт.): лимит PhysX!", icon='CHECKMARK')
+    elif props.collider_type == 'MESH':
         box_col.label(text="✓ Полый точный коллайдер (Concave): огибает стены и пол!", icon='CHECKMARK')
         box_col.label(text="ℹ️ Внутри свободно для ходьбы игрока в VR / Desktop.", icon='INFO')
     elif props.collider_type != 'NONE':

@@ -9,8 +9,8 @@ import bpy
 
 # Global cache for update status
 _update_lock = threading.Lock()
-_current_version_str = "1.8.0"
-_current_version_tuple = (1, 8, 0)
+_current_version_str = "1.8.1"
+_current_version_tuple = (1, 8, 1)
 _latest_version_str = None
 _latest_version_tuple = None
 _update_available = False
