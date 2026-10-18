@@ -324,6 +324,23 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 m_obj.save_typetree(tree)
                 mat_pids.append(m_pid)
 
+            # Extra protection against Varwin VisualizationBehaviour for single-material objects:
+            # Varwin checks `materials.All(m => m.color == firstColor)`. If only 1 material exists,
+            # Varwin assumes it's a basic primitive and attaches VisualizationBehaviour, overriding color!
+            # By appending an unused second material with a tiny delta, CanAddBehaviour returns False cleanly!
+            if preserve and len(mat_pids) == 1 and base_mat_obj:
+                dummy_mat = copy.copy(base_mat_obj)
+                dummy_pid = orig_mat_pid - 9999
+                dummy_mat.path_id = dummy_pid
+                dtree = dummy_mat.read_typetree()
+                dtree['m_Name'] = f"{m_info.get('name', 'Material_0')}_Dummy"
+                for c in dtree.get('m_SavedProperties', {}).get('m_Colors', []):
+                    if c[0] == '_Color':
+                        c[1]['g'] = max(0.0, float(c[1].get('g', 0.8)) - 0.002)
+                dummy_mat.save_typetree(dtree)
+                target_sf.objects[dummy_pid] = dummy_mat
+                mat_pids.append(dummy_pid)
+
         # C.1. In-place patch Mesh
         for o in env.objects:
             if o.type.name == 'Mesh':
@@ -518,13 +535,8 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                             cb['Config'] = {}
                         cb['Config'].update(vr_config)
 
-                        # CRITICAL FIX: Protect materials against Varwin's runtime color override!
-                        # When preserve_materials is True (default), disable AddBehavioursAtRuntime
-                        # and mark DisableSceneLogic = True. This completely disables Varwin's
-                        # VisualizationBehaviour so Varwin never replaces MeshRenderer.sharedMaterials
-                        # with LitMaterials and never crushes all submeshes into a single color!
-                        if preserve:
-                            cb['DisableSceneLogic'] = True
+                        disable_logic = bool(getattr(props, 'disable_scene_logic', False))
+                        cb['DisableSceneLogic'] = disable_logic
 
                         tree['ConfigBlockly'] = json.dumps(cb, ensure_ascii=False)
                     except Exception as e:
@@ -534,9 +546,8 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     tree['Guid'] = new_guid
                     tree['RootGuid'] = new_root_guid
                     tree['AuthorName'] = getattr(props, 'author_name', '') or "Blender Artist"
-                    if preserve:
-                        tree['DisableSceneLogic'] = 1
-                        tree['AddBehavioursAtRuntime'] = 0
+                    tree['DisableSceneLogic'] = 1 if disable_logic else 0
+                    tree['AddBehavioursAtRuntime'] = 0 if disable_logic else 1
                     o.save_typetree(tree)
                     break
 
@@ -600,8 +611,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
     install_meta['DefaultVariableName'] = sanitize_variable_name(getattr(props, 'object_name_en', '') or obj.name)
     install_meta['MobileReady'] = True
     install_meta['LinuxReady'] = True
-    if preserve:
-        install_meta['DisableSceneLogic'] = True
+    install_meta['DisableSceneLogic'] = disable_logic
     if 'Config' not in install_meta or not isinstance(install_meta['Config'], dict):
         install_meta['Config'] = {}
     install_meta['Config'].update(vr_config)

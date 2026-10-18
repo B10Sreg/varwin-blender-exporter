@@ -190,6 +190,8 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_vr.prop(props, "usable")
     box_vr.prop(props, "is_obstacle")
     box_vr.prop(props, "teleport_area")
+    box_vr.separator()
+    box_vr.prop(props, "disable_scene_logic")
 
     # 6. Quick Presets
     box_presets = layout.box()
@@ -859,6 +861,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.usable = False
             p.is_obstacle = True
             p.teleport_area = False
+            p.disable_scene_logic = False
         elif self.preset == 'DYNAMIC_HEAVY':
             p.collider_type = 'CONVEX'
             p.use_rigidbody = True
@@ -873,6 +876,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.usable = False
             p.is_obstacle = True
             p.teleport_area = False
+            p.disable_scene_logic = False
         elif self.preset == 'STATIC_PROP':
             p.collider_type = 'CONVEX'
             p.use_rigidbody = True
@@ -885,6 +889,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.usable = False
             p.is_obstacle = True
             p.teleport_area = False
+            p.disable_scene_logic = False
         elif self.preset == 'TRIGGER_ZONE':
             p.collider_type = 'BOX'
             p.use_rigidbody = True
@@ -897,6 +902,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.usable = False
             p.is_obstacle = False
             p.teleport_area = False
+            p.disable_scene_logic = False
         elif self.preset == 'TELEPORT_FLOOR':
             p.collider_type = 'BOX'
             p.use_rigidbody = True
@@ -909,6 +915,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.usable = False
             p.is_obstacle = False
             p.teleport_area = True
+            p.disable_scene_logic = False
         elif self.preset == 'ROOM_ENVIRONMENT':
             p.collider_type = 'MESH'
             p.use_rigidbody = True
@@ -921,6 +928,7 @@ class OBJECT_OT_varwin_apply_preset(bpy.types.Operator):
             p.usable = False
             p.is_obstacle = True
             p.teleport_area = True
+            p.disable_scene_logic = False
 
         self.report({'INFO'}, f"Применен пресет: {self.preset}")
         return {'FINISHED'}

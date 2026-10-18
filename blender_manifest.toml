@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "varwin_vwo_exporter"
-version = "1.7.0"
+version = "1.7.1"
 name = "Varwin VWO & Scene Exporter"
 tagline = "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwst) в Varwin XRMS"
 maintainer = "B10Sreg"

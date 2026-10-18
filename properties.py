@@ -360,6 +360,11 @@ class VarwinObjectProperties(bpy.types.PropertyGroup):
         default=True,
         description="Предотвращает принудительное перекрашивание всей модели в один цвет стандартным контроллером цвета Varwin"
     )
+    disable_scene_logic: bpy.props.BoolProperty(
+        name="Отключить логику (Только декорация)",
+        default=False,
+        description="Отключает блоки «Физика» и «Интерактивность» в Varwin, превращая объект в пассивную декорацию без настроек в инспекторе"
+    )
     apply_modifiers: bpy.props.BoolProperty(
         name="Применить модификаторы",
         default=True,
