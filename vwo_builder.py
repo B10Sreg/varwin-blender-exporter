@@ -197,6 +197,9 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
 
         # B. Assign unique bundle name & container asset path
         new_bname = f"{prefix}{clean_name}_{clean_root}"
+        base_go_obj = None
+        base_tf_obj = None
+        base_mr_obj = None
         for o in env.objects:
             if o.type.name == 'GameObject':
                 data = o.read()
@@ -205,6 +208,11 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     tree = o.read_typetree()
                     tree['m_Name'] = safe_asset_name
                     o.save_typetree(tree)
+                    base_go_obj = o
+            elif o.type.name == 'Transform' and not base_tf_obj:
+                base_tf_obj = o
+            elif o.type.name == 'MeshRenderer' and not base_mr_obj:
+                base_mr_obj = o
 
         # C. In-place patch Materials, Textures, and MeshRenderer
         base_mat_obj = None
@@ -324,22 +332,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 m_obj.save_typetree(tree)
                 mat_pids.append(m_pid)
 
-            # Extra protection against Varwin VisualizationBehaviour for single-material objects:
-            # Varwin checks `materials.All(m => m.color == firstColor)`. If only 1 material exists,
-            # Varwin assumes it's a basic primitive and attaches VisualizationBehaviour, overriding color!
-            # By appending an unused second material with a tiny delta, CanAddBehaviour returns False cleanly!
-            if preserve and len(mat_pids) == 1 and base_mat_obj:
-                dummy_mat = copy.copy(base_mat_obj)
-                dummy_pid = orig_mat_pid - 9999
-                dummy_mat.path_id = dummy_pid
-                dtree = dummy_mat.read_typetree()
-                dtree['m_Name'] = f"{m_info.get('name', 'Material_0')}_Dummy"
-                for c in dtree.get('m_SavedProperties', {}).get('m_Colors', []):
-                    if c[0] == '_Color':
-                        c[1]['g'] = max(0.0, float(c[1].get('g', 0.8)) - 0.002)
-                dummy_mat.save_typetree(dtree)
-                target_sf.objects[dummy_pid] = dummy_mat
-                mat_pids.append(dummy_pid)
+
 
         # C.1. In-place patch Mesh
         for o in env.objects:
@@ -373,6 +366,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         # C.2. In-place patch MeshRenderer
         for o in env.objects:
             if o.type.name == 'MeshRenderer':
+                base_mr_obj = o
                 tree = o.read_typetree()
                 if mat_pids:
                     tree['m_Materials'] = [{'m_FileID': 0, 'm_PathID': pid} for pid in mat_pids]
@@ -386,6 +380,85 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 tree['m_LightmapIndexDynamic'] = 65535
                 o.save_typetree(tree)
                 break
+
+        # C.3. Reset Transform to identity
+        for o in env.objects:
+            if o.type.name == 'Transform':
+                base_tf_obj = o
+                tree = o.read_typetree()
+                tree['m_LocalPosition'] = {'x': 0.0, 'y': 0.0, 'z': 0.0}
+                tree['m_LocalRotation'] = {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}
+                o.save_typetree(tree)
+                break
+
+        # C.3b. Bulletproof Protection against Varwin VisualizationBehaviour:
+        # Varwin attaches VisualizationBehaviour if `renderers.Select(r => r.sharedMaterial).All(m => m.color == firstColor)`.
+        # When an object has only 1 MeshRenderer, the materials array has length 1, which trivially satisfies All() and
+        # forces VisualizationBehaviour to override ALL submesh materials/textures with a flat color!
+        # By adding an invisible, disabled child MeshRenderer with a distinctly different material color,
+        # Varwin's CanAddBehaviour evaluates All(m => m.color == firstColor) -> False!
+        # This completely stops VisualizationBehaviour from attaching, perfectly preserving all textures and materials!
+        if preserve and base_go_obj and base_tf_obj and base_mr_obj and base_mat_obj and target_sf:
+            shield_mat_pid = -9998881
+            shield_mat = copy.copy(base_mat_obj)
+            shield_mat.path_id = shield_mat_pid
+            mtree = shield_mat.read_typetree()
+            mtree['m_Name'] = 'VarwinMaterialShield'
+            first_col = (0.8, 0.8, 0.8, 1.0)
+            if extracted_mats:
+                first_col = extracted_mats[0].get('color', first_col)
+            shield_r = 1.0 if (first_col[0] < 0.2 and first_col[1] < 0.2 and first_col[2] < 0.2) else 0.0
+            for c in mtree.get('m_SavedProperties', {}).get('m_Colors', []):
+                if c[0] == '_Color':
+                    c[1]['r'] = float(shield_r)
+                    c[1]['g'] = 0.0
+                    c[1]['b'] = 0.0
+                    c[1]['a'] = 1.0
+            shield_mat.save_typetree(mtree)
+            target_sf.objects[shield_mat_pid] = shield_mat
+
+            child_tf_pid = -9998882
+            child_tf = copy.copy(base_tf_obj)
+            child_tf.path_id = child_tf_pid
+            tftree = child_tf.read_typetree()
+            tftree['m_GameObject'] = {'m_FileID': 0, 'm_PathID': -9998883}
+            tftree['m_LocalPosition'] = {'x': 0.0, 'y': 0.0, 'z': 0.0}
+            tftree['m_LocalScale'] = {'x': 0.0, 'y': 0.0, 'z': 0.0}
+            tftree['m_Children'] = []
+            tftree['m_Father'] = {'m_FileID': 0, 'm_PathID': base_tf_obj.path_id}
+            child_tf.save_typetree(tftree)
+            target_sf.objects[child_tf_pid] = child_tf
+
+            child_mr_pid = -9998884
+            child_mr = copy.copy(base_mr_obj)
+            child_mr.path_id = child_mr_pid
+            mrtree = child_mr.read_typetree()
+            mrtree['m_GameObject'] = {'m_FileID': 0, 'm_PathID': -9998883}
+            mrtree['m_Enabled'] = False
+            mrtree['m_Materials'] = [{'m_FileID': 0, 'm_PathID': shield_mat_pid}]
+            child_mr.save_typetree(mrtree)
+            target_sf.objects[child_mr_pid] = child_mr
+
+            child_go_pid = -9998883
+            child_go = copy.copy(base_go_obj)
+            child_go.path_id = child_go_pid
+            gotree = child_go.read_typetree()
+            gotree['m_Name'] = '__MaterialShield'
+            gotree['m_IsActive'] = True
+            gotree['m_Component'] = [
+                {'component': {'m_FileID': 0, 'm_PathID': child_tf_pid}},
+                {'component': {'m_FileID': 0, 'm_PathID': child_mr_pid}}
+            ]
+            child_go.save_typetree(gotree)
+            target_sf.objects[child_go_pid] = child_go
+
+            base_tftree = base_tf_obj.read_typetree()
+            if 'm_Children' not in base_tftree or not isinstance(base_tftree['m_Children'], list):
+                base_tftree['m_Children'] = []
+            base_tftree['m_Children'].append({'m_FileID': 0, 'm_PathID': child_tf_pid})
+            base_tf_obj.save_typetree(base_tftree)
+
+            mat_pids.append(shield_mat_pid)
 
         # C.2b. Comprehensive patch of AssetBundle (m_Name, m_PreloadTable, and m_Container aliases)
         # This registers cloned materials/textures for eager preloading AND registers both the original
@@ -432,15 +505,6 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     container_entries[f"{safe_asset_name}"] = prefab_info
 
                 tree['m_Container'] = sorted(container_entries.items(), key=lambda x: x[0])
-                o.save_typetree(tree)
-                break
-
-        # C.3. Reset Transform to identity
-        for o in env.objects:
-            if o.type.name == 'Transform':
-                tree = o.read_typetree()
-                tree['m_LocalPosition'] = {'x': 0.0, 'y': 0.0, 'z': 0.0}
-                tree['m_LocalRotation'] = {'x': 0.0, 'y': 0.0, 'z': 0.0, 'w': 1.0}
                 o.save_typetree(tree)
                 break
 
