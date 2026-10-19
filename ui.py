@@ -1,4 +1,6 @@
 import bpy
+import bmesh
+import mathutils
 import os
 import sys
 from bpy_extras.io_utils import ExportHelper
@@ -6,6 +8,7 @@ from .vwo_builder import build_vwo_package, build_vwt_package
 from .installer import get_varwin_data_path
 from .deps import VARWIN_OT_install_dependencies, get_dependency_status
 from .updater import draw_updater_ui
+from .mesh_extractor import is_collider_object, get_scene_collider_objects
 
 def get_target_mesh_object(context, target_name: str = None):
     """Safely retrieves a mesh object from context, name or scene fallback."""
@@ -31,6 +34,61 @@ def get_target_mesh_object(context, target_name: str = None):
 # ==============================================================================
 # COMMON DRAW HELPERS
 # ==============================================================================
+
+def draw_colliders_manager_ui(layout, context, is_scene_mode=False):
+    """Draws custom level-design colliders tool block for rooms, halls, and props."""
+    col_objs = get_scene_collider_objects(context.scene if context else None)
+    col_count = len(col_objs)
+    wall_count = len([o for o in col_objs if not ('floor' in o.name.lower() or 'teleport' in o.name.lower())])
+    floor_count = col_count - wall_count
+
+    box = layout.box()
+    row_h = box.row()
+    row_h.label(text="Кастомные Box-коллайдеры (Level Design)", icon='CUBE')
+
+    col_name = "Varwin_Colliders"
+    has_collection = bool(bpy.data.collections.get(col_name))
+
+    if col_count > 0:
+        box.label(
+            text=f"✓ Активно: {col_count} шт. (стен/препятствий: {wall_count}, пола/телепорта: {floor_count})",
+            icon='CHECKMARK'
+        )
+        box.label(
+            text="ℹ️ PhysX загрузит только эти кубы. 0% лагов в залах и 90 FPS в VR!",
+            icon='INFO'
+        )
+    else:
+        if is_scene_mode:
+            box.label(
+                text="ℹ️ Создайте кубы-коллайдеры для стен и пола, чтобы убрать просадки FPS!",
+                icon='INFO'
+            )
+        else:
+            box.label(
+                text="ℹ️ Добавьте кубы-коллайдеры для точной формы без перегрузки PhysX.",
+                icon='INFO'
+            )
+
+    row_acts = box.row(align=True)
+    if not has_collection:
+        row_acts.operator("varwin.create_collider_collection", text="Создать 'Varwin_Colliders'", icon='COLLECTION_NEW')
+    else:
+        row_acts.operator("varwin.create_collider_collection", text="Коллекция активна", icon='CHECKMARK')
+        row_acts.operator("varwin.toggle_colliders_visibility", text="Скрыть / Показать", icon='HIDE_OFF')
+
+    row_add = box.row(align=True)
+    row_add.operator("varwin.add_box_collider", text="+ Box Стена", icon='MESH_CUBE')
+    row_add.operator("varwin.add_floor_collider", text="+ Box Пол / Телепорт", icon='MESH_PLANE')
+
+    if context and context.active_object and context.active_object.type == 'MESH' and not is_collider_object(context.active_object):
+        row_fit = box.row()
+        row_fit.operator(
+            "varwin.fit_collider_to_selection",
+            text=f"📐 Подогнать Box под '{context.active_object.name[:16]}'",
+            icon='SNAP_VOLUME'
+        )
+
 
 def draw_varwin_object_ui(layout, context, obj, props):
     """Draws full Varwin Object inspector UI with physics, colliders, VR flags, and export."""
@@ -167,6 +225,9 @@ def draw_varwin_object_ui(layout, context, obj, props):
 
     if props.collider_type == 'BOX':
         box_col.label(text="✓ 8-вершинный Box Mesh: 100% стабильность PhysX и 0 лагов!", icon='CHECKMARK')
+    elif props.collider_type == 'CUSTOM':
+        box_col.label(text="✓ Кастомные Box-коллайдеры из коллекции 'Varwin_Colliders'", icon='CHECKMARK')
+        draw_colliders_manager_ui(box_col, context, is_scene_mode=False)
     elif props.collider_type == 'CONVEX':
         box_col.label(text="✓ Оптимизированный Convex Hull (<=64 верт.): лимит PhysX!", icon='CHECKMARK')
     elif props.collider_type == 'MESH':
@@ -263,8 +324,12 @@ def draw_varwin_scene_ui(layout, context, scene, scene_props):
     box_geo = layout.box()
     box_geo.label(text="2. Геометрия сцены в шаблон", icon='OUTLINER_OB_MESH')
     box_geo.prop(scene_props, "selected_only")
-    mesh_count = len([o for o in scene.objects if o.type == 'MESH' and not o.hide_get()])
-    box_geo.label(text=f"Всего видимых мешей в сцене: {mesh_count}")
+    raw_meshes = [o for o in scene.objects if o.type == 'MESH' and not o.hide_get()]
+    vis_count = len([o for o in raw_meshes if not is_collider_object(o)])
+    box_geo.label(text=f"Визуальных мешей в сцене: {vis_count}")
+
+    # 2b. Custom Colliders (Level Design)
+    draw_colliders_manager_ui(layout, context, is_scene_mode=True)
 
     # 3. Spawn Point
     box_spawn = layout.box()
@@ -1376,6 +1441,194 @@ class OBJECT_OT_varwin_open_textures_folder(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class VARWIN_OT_create_collider_collection(bpy.types.Operator):
+    """Создать выделенную коллекцию 'Varwin_Colliders' для размещения Box-коллайдеров"""
+    bl_idname = "varwin.create_collider_collection"
+    bl_label = "Создать коллекцию коллайдеров"
+    bl_description = "Создает выделенную коллекцию 'Varwin_Colliders' для размещения кастомных Box-коллайдеров"
+
+    def execute(self, context):
+        col_name = "Varwin_Colliders"
+        col = bpy.data.collections.get(col_name)
+        if not col:
+            col = bpy.data.collections.new(col_name)
+            col.color_tag = 'COLOR_04'  # Green
+            context.scene.collection.children.link(col)
+            self.report({'INFO'}, f"Коллекция '{col_name}' создана! Добавляйте кубики-коллайдеры.")
+        else:
+            self.report({'INFO'}, f"Коллекция '{col_name}' уже готова к работе.")
+
+        vl_col = context.view_layer.layer_collection.children.get(col_name)
+        if vl_col:
+            context.view_layer.active_layer_collection = vl_col
+        return {'FINISHED'}
+
+
+class VARWIN_OT_add_box_collider(bpy.types.Operator):
+    """Добавить каркасный Box-коллайдер (стену или препятствие) в коллекцию коллайдеров"""
+    bl_idname = "varwin.add_box_collider"
+    bl_label = "Добавить Box (Стена)"
+    bl_description = "Создает каркасный зеленый куб-коллайдер для физических стен и препятствий (свободно перемещайте и масштабируйте)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        col_name = "Varwin_Colliders"
+        col = bpy.data.collections.get(col_name)
+        if not col:
+            col = bpy.data.collections.new(col_name)
+            col.color_tag = 'COLOR_04'
+            context.scene.collection.children.link(col)
+
+        mesh = bpy.data.meshes.new("Collider_Wall")
+        bm = bmesh.new()
+        bmesh.ops.create_cube(bm, size=2.0)
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new("Collider_Wall", mesh)
+        obj.display_type = 'WIRE'
+        obj.show_wire = True
+        obj.color = (0.1, 1.0, 0.2, 1.0)
+        obj["varwin_collider"] = True
+        obj["is_floor"] = False
+
+        if hasattr(context.scene, 'cursor'):
+            obj.location = context.scene.cursor.location
+
+        col.objects.link(obj)
+
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+
+        self.report({'INFO'}, f"Добавлен Box Collider '{obj.name}'. Перемещайте (G), вращайте (R) и масштабируйте (S).")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_add_floor_collider(bpy.types.Operator):
+    """Добавить Floor-коллайдер (зону пола и VR-телепортации) в коллекцию коллайдеров"""
+    bl_idname = "varwin.add_floor_collider"
+    bl_label = "Добавить Floor (Пол / Телепорт)"
+    bl_description = "Создает плоский каркасный коллайдер (голубой wireframe) для зоны пола и VR-телепортации"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        col_name = "Varwin_Colliders"
+        col = bpy.data.collections.get(col_name)
+        if not col:
+            col = bpy.data.collections.new(col_name)
+            col.color_tag = 'COLOR_04'
+            context.scene.collection.children.link(col)
+
+        mesh = bpy.data.meshes.new("Collider_Floor")
+        bm = bmesh.new()
+        bmesh.ops.create_cube(bm, size=1.0)
+        for v in bm.verts:
+            v.co.x *= 10.0
+            v.co.y *= 10.0
+            v.co.z *= 0.1
+        bm.to_mesh(mesh)
+        bm.free()
+
+        obj = bpy.data.objects.new("Collider_Floor", mesh)
+        obj.display_type = 'WIRE'
+        obj.show_wire = True
+        obj.color = (0.1, 0.8, 1.0, 1.0)
+        obj["varwin_collider"] = True
+        obj["is_floor"] = True
+
+        if hasattr(context.scene, 'cursor'):
+            obj.location = context.scene.cursor.location
+
+        col.objects.link(obj)
+
+        bpy.ops.object.select_all(action='DESELECT')
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+
+        self.report({'INFO'}, f"Добавлен Floor Collider '{obj.name}' для пола и зоны VR-телепортации.")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_fit_collider_to_selection(bpy.types.Operator):
+    """Создать Box-коллайдер точно по габаритам выделенного объекта"""
+    bl_idname = "varwin.fit_collider_to_selection"
+    bl_label = "Подогнать Box под выделенный меш"
+    bl_description = "Создает Box-коллайдер, идеально охватывающий габариты активного выделенного объекта"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.active_object and context.active_object.type == 'MESH' and not is_collider_object(context.active_object))
+
+    def execute(self, context):
+        act_obj = context.active_object
+        context.view_layer.update()
+
+        col_name = "Varwin_Colliders"
+        col = bpy.data.collections.get(col_name)
+        if not col:
+            col = bpy.data.collections.new(col_name)
+            col.color_tag = 'COLOR_04'
+            context.scene.collection.children.link(col)
+
+        bbox_corners = [act_obj.matrix_world @ mathutils.Vector(corner) for corner in act_obj.bound_box]
+        min_x = min(c.x for c in bbox_corners)
+        max_x = max(c.x for c in bbox_corners)
+        min_y = min(c.y for c in bbox_corners)
+        max_y = max(c.y for c in bbox_corners)
+        min_z = min(c.z for c in bbox_corners)
+        max_z = max(c.z for c in bbox_corners)
+
+        center = mathutils.Vector(((min_x + max_x) * 0.5, (min_y + max_y) * 0.5, (min_z + max_z) * 0.5))
+        dim = mathutils.Vector((max(0.01, max_x - min_x), max(0.01, max_y - min_y), max(0.01, max_z - min_z)))
+
+        mesh = bpy.data.meshes.new(f"Collider_{act_obj.name}")
+        bm = bmesh.new()
+        bmesh.ops.create_cube(bm, size=1.0)
+        for v in bm.verts:
+            v.co.x *= dim.x
+            v.co.y *= dim.y
+            v.co.z *= dim.z
+        bm.to_mesh(mesh)
+        bm.free()
+
+        col_obj = bpy.data.objects.new(f"Collider_{act_obj.name}", mesh)
+        col_obj.location = center
+        col_obj.display_type = 'WIRE'
+        col_obj.show_wire = True
+        col_obj.color = (0.1, 1.0, 0.2, 1.0)
+        col_obj["varwin_collider"] = True
+        col_obj["is_floor"] = ('floor' in act_obj.name.lower())
+
+        col.objects.link(col_obj)
+
+        bpy.ops.object.select_all(action='DESELECT')
+        col_obj.select_set(True)
+        context.view_layer.objects.active = col_obj
+
+        self.report({'INFO'}, f"Создан подогнанный Box Collider для '{act_obj.name}'")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_toggle_colliders_visibility(bpy.types.Operator):
+    """Скрыть / Показать коллекцию коллайдеров во Viewport"""
+    bl_idname = "varwin.toggle_colliders_visibility"
+    bl_label = "Скрыть / Показать коллайдеры"
+    bl_description = "Переключает видимость всех коллайдеров в окне 3D Viewport"
+
+    def execute(self, context):
+        col_name = "Varwin_Colliders"
+        vl_col = context.view_layer.layer_collection.children.get(col_name)
+        if vl_col:
+            vl_col.hide_viewport = not vl_col.hide_viewport
+            state = "скрыты" if vl_col.hide_viewport else "видны"
+            self.report({'INFO'}, f"Коллайдеры '{col_name}' теперь {state}")
+        else:
+            self.report({'WARNING'}, f"Коллекция '{col_name}' не найдена")
+        return {'FINISHED'}
+
+
 classes = (
     OBJECT_OT_varwin_export,
     SCENE_OT_varwin_export_vwt,
@@ -1389,6 +1642,11 @@ classes = (
     SCENE_OT_varwin_apply_lighting_preset,
     VARWIN_OT_switch_to_properties,
     VARWIN_OT_install_dependencies,
+    VARWIN_OT_create_collider_collection,
+    VARWIN_OT_add_box_collider,
+    VARWIN_OT_add_floor_collider,
+    VARWIN_OT_fit_collider_to_selection,
+    VARWIN_OT_toggle_colliders_visibility,
     OBJECT_PT_varwin_object,
     SCENE_PT_varwin_scene,
     PROPERTIES_PT_varwin_main,

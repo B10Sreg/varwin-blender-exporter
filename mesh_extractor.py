@@ -229,7 +229,7 @@ def extract_object_geometry(objects, root_obj=None, apply_modifiers: bool = True
     if isinstance(objects, bpy.types.Object):
         objects = [objects]
 
-    mesh_objs = [o for o in objects if o and o.type == 'MESH']
+    mesh_objs = [o for o in objects if o and o.type == 'MESH' and not is_collider_object(o)]
     if not mesh_objs:
         raise ValueError("Не найдено полигональных мешей (Mesh) для экспорта объекта!")
 
@@ -661,17 +661,151 @@ def extract_convex_hull_geometry(mesh_objs, root_obj=None, max_verts=64):
     return generate_box_mesh_data(cx, cy, cz, 0.5, 0.5, 0.5)
 
 
+def is_collider_object(obj):
+    """
+    Checks whether an object is designated as a collision helper (level design box collider).
+    Such objects are excluded from visual rendering and used for physical collision.
+    """
+    if not obj or obj.type != 'MESH':
+        return False
+    if obj.get('varwin_collider', False) or obj.get('is_collider', False):
+        return True
+    name_lower = obj.name.lower()
+    if name_lower.startswith(('collider_', 'col_', 'ubx_', 'ucx_')):
+        return True
+    for col in getattr(obj, 'users_collection', []):
+        if 'collider' in col.name.lower():
+            return True
+    return False
+
+
+def get_scene_collider_objects(scene=None):
+    """Returns all collider mesh objects found in the scene or collider collections."""
+    if scene is None:
+        scene = bpy.context.scene if bpy.context else None
+    if not scene:
+        return []
+
+    colliders = []
+    # 1. Look inside collections named *collider* (e.g. 'Varwin_Colliders')
+    for col in bpy.data.collections:
+        if 'collider' in col.name.lower():
+            for obj in col.objects:
+                if obj.type == 'MESH' and obj not in colliders:
+                    colliders.append(obj)
+
+    # 2. Also check any scene objects matching naming conventions
+    for obj in scene.objects:
+        if obj.type == 'MESH' and obj not in colliders and is_collider_object(obj):
+            colliders.append(obj)
+
+    return colliders
+
+
+def extract_custom_colliders(scene=None, root_obj=None):
+    """
+    Extracts custom level-design box/primitive colliders from the scene.
+    Separates into physical walls/obstacles and teleport floors.
+    Returns None if no custom colliders are defined.
+    """
+    col_objs = get_scene_collider_objects(scene)
+    if not col_objs:
+        return None
+
+    depsgraph = bpy.context.evaluated_depsgraph_get() if bpy.context else None
+
+    wall_triangles = []
+    floor_triangles = []
+    all_triangles = []
+
+    floor_keywords = ('floor', 'teleport', 'walk', 'ground', 'pol', 'walkable')
+    inv_root_world = root_obj.matrix_world.inverted() if root_obj else None
+
+    for obj in col_objs:
+        eval_obj = obj.evaluated_get(depsgraph) if depsgraph else obj
+        mesh = eval_obj.to_mesh()
+
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.calc_loop_triangles()
+
+        if inv_root_world:
+            rel_mat = inv_root_world @ obj.matrix_world
+        else:
+            rel_mat = obj.matrix_world
+
+        norm_mat = rel_mat.to_3x3().inverted().transposed()
+        obj_name_lower = obj.name.lower()
+        is_floor = any(k in obj_name_lower for k in floor_keywords) or obj.get('is_floor', False)
+
+        for tri in mesh.loop_triangles:
+            tri_verts = []
+            avg_ny = 0.0
+            for vi in tri.vertices:
+                v = mesh.vertices[vi]
+                co = rel_mat @ v.co
+                no = (norm_mat @ v.normal).normalized()
+                # Blender Z-up (x, y, z) to Unity Y-up (x, z, y)
+                px = float(co.x)
+                py = float(co.z)
+                pz = float(co.y)
+                nx = float(no.x)
+                ny = float(no.z)
+                nz = float(no.y)
+                avg_ny += ny
+                tri_verts.append((px, py, pz, nx, ny, nz, 0.0, 0.0))
+            avg_ny /= 3.0
+
+            all_triangles.append(tri_verts)
+            if is_floor or avg_ny > 0.8:
+                floor_triangles.append(tri_verts)
+            else:
+                wall_triangles.append(tri_verts)
+
+        eval_obj.to_mesh_clear()
+
+    if not all_triangles:
+        return None
+
+    if not wall_triangles:
+        wall_triangles = all_triangles
+    if not floor_triangles:
+        floor_triangles = [t for t in all_triangles if (t[0][4] + t[1][4] + t[2][4]) / 3.0 > 0.5]
+    if not floor_triangles:
+        floor_triangles = all_triangles
+
+    all_mesh = _pack_triangles(all_triangles)
+    wall_mesh = _pack_triangles(wall_triangles)
+    floor_mesh = _pack_triangles(floor_triangles) if floor_triangles else all_mesh
+
+    return {
+        'all_mesh': all_mesh,
+        'wall_mesh': wall_mesh,
+        'floor_mesh': floor_mesh,
+        'count': len(col_objs),
+        'wall_count': len([o for o in col_objs if not any(k in o.name.lower() for k in floor_keywords)]),
+        'floor_count': len([o for o in col_objs if any(k in o.name.lower() for k in floor_keywords)]),
+    }
+
+
 def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: bool = True):
     """
     Extracts and merges visible meshes from the Blender scene in world space,
     preserving materials and creating per-material submeshes for Scene Template (.vwt).
     Also generates dedicated floor_mesh (for TeleportArea BaseCollision) and
     collision_mesh (for Base MeshCollider, omitting ceilings).
+    If custom level-design colliders exist, uses them directly for collision.
     """
     if selected_only and bpy.context and bpy.context.selected_objects:
-        mesh_objs = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()]
+        raw_mesh_objs = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()]
     else:
-        mesh_objs = [o for o in scene.objects if o.type == 'MESH' and not o.hide_get()]
+        raw_mesh_objs = [o for o in scene.objects if o.type == 'MESH' and not o.hide_get()]
+
+    # Filter out collider helper objects from visual rendering
+    mesh_objs = [o for o in raw_mesh_objs if not is_collider_object(o)]
 
     if not mesh_objs:
         raise ValueError("В сцене нет видимых полигональных мешей для экспорта в шаблон сцены!")
@@ -881,17 +1015,27 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
 
     total_index_count = sum(len(material_map[k]['indices']) for k in ordered_materials)
 
-    # Fallbacks if floor or collision filters were too strict
-    if not floor_triangles:
-        floor_triangles = [t for t in all_triangles if (t[0][4] + t[1][4] + t[2][4]) / 3.0 > 0.5]
-    if not floor_triangles:
-        floor_triangles = all_triangles
+    # Check if custom level-design colliders exist in scene
+    custom_col = extract_custom_colliders(scene, root_obj=None)
+    if custom_col:
+        collision_mesh_dict = custom_col['wall_mesh']
+        floor_mesh_dict = custom_col['floor_mesh']
+        custom_used = True
+        custom_count = custom_col['count']
+    else:
+        # Fallbacks if floor or collision filters were too strict
+        if not floor_triangles:
+            floor_triangles = [t for t in all_triangles if (t[0][4] + t[1][4] + t[2][4]) / 3.0 > 0.5]
+        if not floor_triangles:
+            floor_triangles = all_triangles
 
-    if not collision_triangles:
-        collision_triangles = all_triangles
+        if not collision_triangles:
+            collision_triangles = all_triangles
 
-    floor_mesh_dict = _pack_triangles(floor_triangles)
-    collision_mesh_dict = _pack_triangles(collision_triangles)
+        floor_mesh_dict = _pack_triangles(floor_triangles)
+        collision_mesh_dict = _pack_triangles(collision_triangles)
+        custom_used = False
+        custom_count = 0
 
     return {
         'vertex_count': len(vertices_data),
@@ -908,5 +1052,7 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
         'radius': (ex**2 + ey**2 + ez**2)**0.5,
         'objects_merged': len(mesh_objs),
         'floor_mesh': floor_mesh_dict,
-        'collision_mesh': collision_mesh_dict
+        'collision_mesh': collision_mesh_dict,
+        'custom_colliders_used': custom_used,
+        'custom_colliders_count': custom_count
     }

@@ -20,6 +20,8 @@ from .mesh_extractor import (
     extract_scene_geometry,
     generate_box_mesh_data,
     extract_convex_hull_geometry,
+    extract_custom_colliders,
+    is_collider_object,
 )
 from .preview_generator import generate_preview_images
 from .installer import install_vwo_to_varwin, install_scene_template_to_varwin
@@ -70,7 +72,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
 
     # Resolve target mesh objects and reference/pivot object
     if isinstance(obj_or_objects, (list, tuple)):
-        mesh_objs = [o for o in obj_or_objects if o and o.type == 'MESH']
+        mesh_objs = [o for o in obj_or_objects if o and o.type == 'MESH' and not is_collider_object(o)]
         root_obj = None
         if bpy.context and bpy.context.active_object in mesh_objs:
             root_obj = bpy.context.active_object
@@ -80,17 +82,17 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         root_obj = obj_or_objects
         scope = getattr(props, 'export_scope', None)
         if scope == 'ACTIVE':
-            mesh_objs = [root_obj]
+            mesh_objs = [root_obj] if not is_collider_object(root_obj) else []
         elif scope == 'VISIBLE':
-            mesh_objs = [o for o in bpy.context.scene.objects if o.type == 'MESH' and not o.hide_get()] if (bpy.context and bpy.context.scene) else [root_obj]
+            mesh_objs = [o for o in bpy.context.scene.objects if o.type == 'MESH' and not o.hide_get() and not is_collider_object(o)] if (bpy.context and bpy.context.scene) else [root_obj]
         else:  # 'SELECTED' (default) or legacy selected_only
-            sel_meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get()] if (bpy.context and getattr(bpy.context, 'selected_objects', None)) else []
+            sel_meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH' and not o.hide_get() and not is_collider_object(o)] if (bpy.context and getattr(bpy.context, 'selected_objects', None)) else []
             if sel_meshes:
                 mesh_objs = sel_meshes
                 if root_obj not in mesh_objs:
                     root_obj = mesh_objs[0]
             else:
-                mesh_objs = [root_obj]
+                mesh_objs = [root_obj] if not is_collider_object(root_obj) else []
 
     if not mesh_objs:
         raise ValueError("Не найдено полигональных мешей (Mesh) для экспорта в объект .vwo!")
@@ -150,7 +152,14 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
     # Unity PhysX strictly limits convex mesh cooking to <= 255 vertices / polygons.
     # Exceeding 255 vertices causes PhysX cooking failure, missing colliders, and crashes PhysicsBehaviour.
     col_mesh_data = None
-    if collider_type == 'BOX':
+    custom_col_data = extract_custom_colliders(bpy.context.scene if bpy.context else None, root_obj=root_obj)
+
+    if collider_type == 'CUSTOM' or (custom_col_data and collider_type in ('BOX', 'MESH')):
+        if custom_col_data:
+            col_mesh_data = custom_col_data['all_mesh']
+        elif collider_type == 'BOX':
+            col_mesh_data = generate_box_mesh_data(cx, cy, cz, ex, ey, ez)
+    elif collider_type == 'BOX':
         col_mesh_data = generate_box_mesh_data(cx, cy, cz, ex, ey, ez)
     elif collider_type == 'CONVEX':
         if mesh_info.get('vertex_count', 0) > 200:
@@ -584,7 +593,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 break
 
         # D. In-place patch Rigidbody
-        is_concave_mesh = (collider_type in ('MESH', 'MESH_CONCAVE'))
+        is_concave_mesh = (collider_type in ('MESH', 'MESH_CONCAVE') or (collider_type == 'CUSTOM' and (not getattr(props, 'use_rigidbody', True) or getattr(props, 'is_kinematic', False))))
         for o in env.objects:
             if o.type.name == 'Rigidbody':
                 tree = o.read_typetree()
@@ -633,6 +642,10 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 elif collider_type == 'CONVEX':
                     # Under 255-vertex convex mesh (guaranteed by extract_convex_hull_geometry)
                     tree['m_Convex'] = True
+                    tree['m_Enabled'] = True
+                elif collider_type == 'CUSTOM':
+                    # Custom box colliders from collection: concave for static/kinematic, convex for dynamic
+                    tree['m_Convex'] = not is_concave_mesh
                     tree['m_Enabled'] = True
                 elif collider_type == 'NONE':
                     tree['m_Convex'] = False
@@ -1162,7 +1175,31 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
             if o.type.name == 'Mesh':
                 tree = o.read_typetree()
                 m_name = tree.get('m_Name')
-                if m_name == 'Base':
+                if o.path_id == 32 or m_name == 'BaseWallCollision':
+                    tree['m_Name'] = 'BaseWallCollision'
+                    tree['m_VertexData']['m_VertexCount'] = collision_mesh['vertex_count']
+                    tree['m_VertexData']['m_DataSize'] = collision_mesh['raw_vertex_data']
+                    tree['m_VertexData']['m_Channels'] = UNITY_48B_CHANNELS
+                    tree['m_IndexBuffer'] = collision_mesh['raw_index_buffer']
+                    tree['m_IndexFormat'] = collision_mesh['index_format']
+                    tree['m_SubMeshes'] = collision_mesh.get('submeshes', [{
+                        'firstByte': 0,
+                        'indexCount': collision_mesh['index_count'],
+                        'topology': 0,
+                        'baseVertex': 0,
+                        'firstVertex': 0,
+                        'vertexCount': collision_mesh['vertex_count'],
+                        'localAABB': {
+                            'm_Center': collision_mesh['aabb_center'],
+                            'm_Extent': collision_mesh['aabb_extent']
+                        }
+                    }])
+                    tree['m_LocalAABB'] = {
+                        'm_Center': collision_mesh['aabb_center'],
+                        'm_Extent': collision_mesh['aabb_extent']
+                    }
+                    o.save_typetree(tree)
+                elif (o.path_id == 31 or m_name == 'Base') and o.path_id != 32:
                     tree['m_VertexData']['m_VertexCount'] = mesh_info['vertex_count']
                     tree['m_VertexData']['m_DataSize'] = mesh_info['raw_vertex_data']
                     tree['m_VertexData']['m_Channels'] = UNITY_48B_CHANNELS
@@ -1185,7 +1222,7 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                         'm_Extent': mesh_info['aabb_extent']
                     }
                     o.save_typetree(tree)
-                elif m_name == 'BaseCollision':
+                elif m_name == 'BaseCollision' or o.path_id == 39:
                     tree['m_VertexData']['m_VertexCount'] = floor_mesh['vertex_count']
                     tree['m_VertexData']['m_DataSize'] = floor_mesh['raw_vertex_data']
                     tree['m_VertexData']['m_Channels'] = UNITY_48B_CHANNELS
