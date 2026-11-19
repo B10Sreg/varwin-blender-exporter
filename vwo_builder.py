@@ -121,6 +121,14 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         for fname in ztpl.namelist():
             template_files[fname] = ztpl.read(fname)
 
+    template_asset_name = 'VCylinder'
+    if 'bundle.json' in template_files:
+        try:
+            bjson_orig = json.loads(template_files['bundle.json'].decode('utf-8'))
+            template_asset_name = bjson_orig.get('AssetName', 'VCylinder')
+        except Exception:
+            pass
+
     # 3. Calculate collider dimensions & centers
     cx = mesh_info['aabb_center']['x']
     cy = mesh_info['aabb_center']['y']
@@ -580,6 +588,7 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     info['preloadSize'] = total_preloads
 
                 if prefab_info:
+                    # 1) Paths for new custom object name and GUID
                     container_entries[new_prefab_path] = prefab_info
                     container_entries[new_prefab_path.lower()] = prefab_info
                     container_entries[f"assets/objects/{clean_name}_{clean_root}/{clean_name}.prefab"] = prefab_info
@@ -587,6 +596,21 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     container_entries[f"{clean_name}"] = prefab_info
                     container_entries[f"{safe_asset_name}.prefab"] = prefab_info
                     container_entries[f"{safe_asset_name}"] = prefab_info
+
+                    # 2) Crucial aliases matching template bundle.json AssetName!
+                    # Varwin AssetBundleBuiltIn / SpawnManager calls LoadAsset<GameObject>(assetInfo.AssetName).
+                    # Since bundle.json keeps AssetName from the template (e.g. 'VCylinder'),
+                    # Unity AssetBundle MUST contain exact aliases for 'VCylinder', 'VCylinder.prefab', etc.
+                    # Otherwise Unity LoadAsset returns null, causing:
+                    # "ArgumentException: The Object you want to instantiate is null."
+                    if template_asset_name:
+                        t_clean = template_asset_name.strip()
+                        container_entries[t_clean] = prefab_info
+                        container_entries[f"{t_clean}.prefab"] = prefab_info
+                        container_entries[t_clean.lower()] = prefab_info
+                        container_entries[f"{t_clean.lower()}.prefab"] = prefab_info
+                        container_entries[f"assets/basic-content-pack/objects/{t_clean.lower()}/{t_clean.lower()}.prefab"] = prefab_info
+                        container_entries[f"assets/basic-content-pack/objects/{t_clean}/{t_clean}.prefab"] = prefab_info
 
                 tree['m_Container'] = sorted(container_entries.items(), key=lambda x: x[0])
                 o.save_typetree(tree)
