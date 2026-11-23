@@ -121,14 +121,6 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
         for fname in ztpl.namelist():
             template_files[fname] = ztpl.read(fname)
 
-    template_asset_name = 'VCylinder'
-    if 'bundle.json' in template_files:
-        try:
-            bjson_orig = json.loads(template_files['bundle.json'].decode('utf-8'))
-            template_asset_name = bjson_orig.get('AssetName', 'VCylinder')
-        except Exception:
-            pass
-
     # 3. Calculate collider dimensions & centers
     cx = mesh_info['aabb_center']['x']
     cy = mesh_info['aabb_center']['y']
@@ -165,10 +157,13 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
     if collider_type == 'CUSTOM' or (custom_col_data and collider_type in ('BOX', 'MESH')):
         if custom_col_data:
             col_mesh_data = custom_col_data['all_mesh']
+            print(f"[Varwin Exporter] 🛡️ Объект: авто-меши коллизий отключены, используются кастомные Box-коллайдеры ({custom_col_data['count']} шт., 0 лагов).")
         elif collider_type == 'BOX':
             col_mesh_data = generate_box_mesh_data(cx, cy, cz, ex, ey, ez)
+            print(f"[Varwin Exporter] 🛡️ Объект: авто-меши коллизий отключены, используется облегченный Box-коллайдер (0 лагов).")
     elif collider_type == 'BOX':
         col_mesh_data = generate_box_mesh_data(cx, cy, cz, ex, ey, ez)
+        print(f"[Varwin Exporter] 🛡️ Объект: авто-меши коллизий отключены, используется облегченный Box-коллайдер (0 лагов).")
     elif collider_type == 'CONVEX':
         if mesh_info.get('vertex_count', 0) > 200:
             col_mesh_data = extract_convex_hull_geometry(mesh_objs, root_obj=root_obj, max_verts=64)
@@ -320,6 +315,8 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                 tree['m_Name'] = m_info.get('name', f'Material_{i}')
                 col = m_info.get('color', (0.8, 0.8, 0.8, 1.0))
                 ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
+                is_transparent = bool(m_info.get('is_transparent', False))
+                blend_mode = m_info.get('blend_mode', 'OPAQUE')
 
                 # Dual-layer protection against Varwin's VisualizationBehaviour:
                 # 1) Engine level: AddBehavioursAtRuntime=0 & DisableSceneLogic=1
@@ -349,27 +346,54 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                             t_env[1]['m_Offset'] = {'x': 0.0, 'y': 0.0}
 
                 is_emissive = max(ecol[0], ecol[1], ecol[2]) > 0.01
+                keywords = []
+                if is_transparent:
+                    if blend_mode == 'CUTOUT':
+                        keywords.append('_ALPHATEST_ON')
+                    else:
+                        keywords.append('_ALPHAPREMULTIPLY_ON')
                 if is_emissive:
-                    if 'm_ValidKeywords' in tree:
-                        tree['m_ValidKeywords'] = ['_EMISSION']
-                    if 'm_ShaderKeywords' in tree:
-                        tree['m_ShaderKeywords'] = '_EMISSION'
-                else:
-                    if 'm_ValidKeywords' in tree:
-                        tree['m_ValidKeywords'] = []
-                    if 'm_ShaderKeywords' in tree:
-                        tree['m_ShaderKeywords'] = ''
+                    keywords.append('_EMISSION')
+
+                if 'm_ValidKeywords' in tree:
+                    tree['m_ValidKeywords'] = keywords
+                if 'm_ShaderKeywords' in tree:
+                    tree['m_ShaderKeywords'] = ' '.join(keywords) if keywords else ''
 
                 # Unity Standard Shader renders pitch black if metallic == 1.0 without baked reflection cubemap.
                 # Clamp metallic to 0.80 to keep specular sheen while preserving diffuse lighting!
                 met = min(float(m_info.get('metallic', 0.0)), 0.80)
                 gloss = float(m_info.get('glossiness', 0.5))
-                floats = tree.get('m_SavedProperties', {}).get('m_Floats', [])
-                tree['m_SavedProperties']['m_Floats'] = [
-                    (k, (1.0 if is_emissive else 0.0) if k == '_EmissionEnabled' else
-                        (met if k == '_Metallic' else (gloss if k == '_Glossiness' else v)))
-                    for k, v in floats
-                ]
+                floats_dict = dict(tree.get('m_SavedProperties', {}).get('m_Floats', []))
+                floats_dict['_Metallic'] = met
+                floats_dict['_Glossiness'] = gloss
+                floats_dict['_EmissionEnabled'] = 1.0 if is_emissive else 0.0
+
+                if is_transparent:
+                    if blend_mode == 'CUTOUT':
+                        floats_dict['_Mode'] = 1.0
+                        floats_dict['_SrcBlend'] = 1.0
+                        floats_dict['_DstBlend'] = 0.0
+                        floats_dict['_ZWrite'] = 1.0
+                        floats_dict['_Cutoff'] = 0.5
+                        tree['m_CustomRenderQueue'] = 2450
+                        tree['stringTagMap'] = [('RenderType', 'TransparentCutout')]
+                    else:
+                        floats_dict['_Mode'] = 3.0
+                        floats_dict['_SrcBlend'] = 1.0
+                        floats_dict['_DstBlend'] = 10.0
+                        floats_dict['_ZWrite'] = 0.0
+                        tree['m_CustomRenderQueue'] = 3000
+                        tree['stringTagMap'] = [('RenderType', 'Transparent')]
+                else:
+                    floats_dict['_Mode'] = 0.0
+                    floats_dict['_SrcBlend'] = 1.0
+                    floats_dict['_DstBlend'] = 0.0
+                    floats_dict['_ZWrite'] = 1.0
+                    tree['m_CustomRenderQueue'] = -1
+                    tree['stringTagMap'] = []
+
+                tree['m_SavedProperties']['m_Floats'] = list(floats_dict.items())
                 m_obj.save_typetree(tree)
                 mat_pids.append(m_pid)
 
@@ -588,7 +612,6 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     info['preloadSize'] = total_preloads
 
                 if prefab_info:
-                    # 1) Paths for new custom object name and GUID
                     container_entries[new_prefab_path] = prefab_info
                     container_entries[new_prefab_path.lower()] = prefab_info
                     container_entries[f"assets/objects/{clean_name}_{clean_root}/{clean_name}.prefab"] = prefab_info
@@ -596,21 +619,6 @@ def build_vwo_package(obj_or_objects, props, output_filepath: str):
                     container_entries[f"{clean_name}"] = prefab_info
                     container_entries[f"{safe_asset_name}.prefab"] = prefab_info
                     container_entries[f"{safe_asset_name}"] = prefab_info
-
-                    # 2) Crucial aliases matching template bundle.json AssetName!
-                    # Varwin AssetBundleBuiltIn / SpawnManager calls LoadAsset<GameObject>(assetInfo.AssetName).
-                    # Since bundle.json keeps AssetName from the template (e.g. 'VCylinder'),
-                    # Unity AssetBundle MUST contain exact aliases for 'VCylinder', 'VCylinder.prefab', etc.
-                    # Otherwise Unity LoadAsset returns null, causing:
-                    # "ArgumentException: The Object you want to instantiate is null."
-                    if template_asset_name:
-                        t_clean = template_asset_name.strip()
-                        container_entries[t_clean] = prefab_info
-                        container_entries[f"{t_clean}.prefab"] = prefab_info
-                        container_entries[t_clean.lower()] = prefab_info
-                        container_entries[f"{t_clean.lower()}.prefab"] = prefab_info
-                        container_entries[f"assets/basic-content-pack/objects/{t_clean.lower()}/{t_clean.lower()}.prefab"] = prefab_info
-                        container_entries[f"assets/basic-content-pack/objects/{t_clean}/{t_clean}.prefab"] = prefab_info
 
                 tree['m_Container'] = sorted(container_entries.items(), key=lambda x: x[0])
                 o.save_typetree(tree)
@@ -1035,6 +1043,8 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                 tree['m_Name'] = m_info.get('name', f'SceneMaterial_{i}')
                 col = m_info.get('color', (0.8, 0.8, 0.8, 1.0))
                 ecol = m_info.get('emission', (0.0, 0.0, 0.0, 1.0))
+                is_transparent = bool(m_info.get('is_transparent', False))
+                blend_mode = m_info.get('blend_mode', 'OPAQUE')
                 is_emissive = max(ecol[0], ecol[1], ecol[2]) > 0.01
 
                 has_em_prop = False
@@ -1063,27 +1073,54 @@ def build_vwt_package(scene, scene_props, output_filepath: str):
                         if t_env[0] == '_MainTex':
                             t_env[1]['m_Texture'] = {'m_FileID': 1, 'm_PathID': tex_pid}
 
+                keywords = []
+                if is_transparent:
+                    if blend_mode == 'CUTOUT':
+                        keywords.append('_ALPHATEST_ON')
+                    else:
+                        keywords.append('_ALPHAPREMULTIPLY_ON')
                 if is_emissive:
-                    if 'm_ValidKeywords' in tree:
-                        tree['m_ValidKeywords'] = ['_EMISSION']
-                    if 'm_ShaderKeywords' in tree:
-                        tree['m_ShaderKeywords'] = '_EMISSION'
+                    keywords.append('_EMISSION')
                     tree['m_LightmapFlags'] = 2
-                else:
-                    if 'm_ValidKeywords' in tree:
-                        tree['m_ValidKeywords'] = []
-                    if 'm_ShaderKeywords' in tree:
-                        tree['m_ShaderKeywords'] = ''
+
+                if 'm_ValidKeywords' in tree:
+                    tree['m_ValidKeywords'] = keywords
+                if 'm_ShaderKeywords' in tree:
+                    tree['m_ShaderKeywords'] = ' '.join(keywords) if keywords else ''
 
                 # Clamp metallic to 0.80 to prevent black rendering without cubemap
                 met = min(float(m_info.get('metallic', 0.0)), 0.80)
                 gloss = float(m_info.get('glossiness', 0.5))
-                floats = tree.get('m_SavedProperties', {}).get('m_Floats', [])
-                tree['m_SavedProperties']['m_Floats'] = [
-                    (k, (1.0 if is_emissive else 0.0) if k == '_EmissionEnabled' else
-                        (met if k == '_Metallic' else (gloss if k == '_Glossiness' else v)))
-                    for k, v in floats
-                ]
+                floats_dict = dict(tree.get('m_SavedProperties', {}).get('m_Floats', []))
+                floats_dict['_Metallic'] = met
+                floats_dict['_Glossiness'] = gloss
+                floats_dict['_EmissionEnabled'] = 1.0 if is_emissive else 0.0
+
+                if is_transparent:
+                    if blend_mode == 'CUTOUT':
+                        floats_dict['_Mode'] = 1.0
+                        floats_dict['_SrcBlend'] = 1.0
+                        floats_dict['_DstBlend'] = 0.0
+                        floats_dict['_ZWrite'] = 1.0
+                        floats_dict['_Cutoff'] = 0.5
+                        tree['m_CustomRenderQueue'] = 2450
+                        tree['stringTagMap'] = [('RenderType', 'TransparentCutout')]
+                    else:
+                        floats_dict['_Mode'] = 3.0
+                        floats_dict['_SrcBlend'] = 1.0
+                        floats_dict['_DstBlend'] = 10.0
+                        floats_dict['_ZWrite'] = 0.0
+                        tree['m_CustomRenderQueue'] = 3000
+                        tree['stringTagMap'] = [('RenderType', 'Transparent')]
+                else:
+                    floats_dict['_Mode'] = 0.0
+                    floats_dict['_SrcBlend'] = 1.0
+                    floats_dict['_DstBlend'] = 0.0
+                    floats_dict['_ZWrite'] = 1.0
+                    tree['m_CustomRenderQueue'] = -1
+                    tree['stringTagMap'] = []
+
+                tree['m_SavedProperties']['m_Floats'] = list(floats_dict.items())
                 m_obj.save_typetree(tree)
                 vwt_mat_pids.append(m_pid)
 

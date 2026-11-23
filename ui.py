@@ -8,7 +8,13 @@ from .vwo_builder import build_vwo_package, build_vwt_package
 from .installer import get_varwin_data_path
 from .deps import VARWIN_OT_install_dependencies, get_dependency_status
 from .updater import draw_updater_ui
-from .mesh_extractor import is_collider_object, get_scene_collider_objects
+from .mesh_extractor import (
+    is_collider_object,
+    get_scene_collider_objects,
+    get_box_collider_bounds,
+    is_point_inside_box,
+    is_mesh_inside_box_colliders,
+)
 
 def get_target_mesh_object(context, target_name: str = None):
     """Safely retrieves a mesh object from context, name or scene fallback."""
@@ -88,6 +94,22 @@ def draw_colliders_manager_ui(layout, context, is_scene_mode=False):
             text=f"📐 Подогнать Box под '{context.active_object.name[:16]}'",
             icon='SNAP_VOLUME'
         )
+
+    row_tools = box.row(align=True)
+    row_tools.operator("varwin.detect_and_disable_internal_meshes", text="Отключить авто-меши внутри Box", icon='CHECKBOX_HLT')
+    row_tools.operator("varwin.enable_all_auto_collisions", text="Сброс", icon='X')
+
+    scene_props = getattr(context.scene, "varwin_scene", None) if context and context.scene else None
+    if scene_props and hasattr(scene_props, "disable_internal_auto_meshes"):
+        box.prop(scene_props, "disable_internal_auto_meshes", text="Авто-отключение мешей внутри Box при экспорте")
+
+    if context and context.scene:
+        disabled_count = sum(1 for o in context.scene.objects if o.get('varwin_auto_collision_disabled', False) or getattr(getattr(o, 'varwin', None), 'auto_collision_disabled', False))
+        if disabled_count > 0:
+            box.label(
+                text=f"🛡️ Отключено {disabled_count} авто-мешей внутри Box (без лагов PhysX)",
+                icon='SHIELD'
+            )
 
 
 def draw_varwin_object_ui(layout, context, obj, props):
@@ -222,6 +244,9 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_col.label(text="4. Форма Коллайдера", icon='MOD_BEVEL')
     box_col.prop(props, "collider_type")
     box_col.prop(props, "is_trigger")
+
+    if obj.get('varwin_auto_collision_disabled', False) or getattr(props, 'auto_collision_disabled', False):
+        box_col.label(text="🛡️ Авто-меш коллизий ОТКЛЮЧЕН (внутри Box, 0 лагов PhysX)", icon='SHIELD')
 
     if props.collider_type == 'BOX':
         box_col.label(text="✓ 8-вершинный Box Mesh: 100% стабильность PhysX и 0 лагов!", icon='CHECKMARK')
@@ -1600,6 +1625,12 @@ class VARWIN_OT_fit_collider_to_selection(bpy.types.Operator):
         col_obj.color = (0.1, 1.0, 0.2, 1.0)
         col_obj["varwin_collider"] = True
         col_obj["is_floor"] = ('floor' in act_obj.name.lower())
+        col_obj["target_mesh"] = act_obj.name
+
+        # Explicitly disable auto-collision on target mesh inside the box collider
+        act_obj["varwin_auto_collision_disabled"] = True
+        if hasattr(act_obj, "varwin"):
+            act_obj.varwin.auto_collision_disabled = True
 
         col.objects.link(col_obj)
 
@@ -1607,7 +1638,57 @@ class VARWIN_OT_fit_collider_to_selection(bpy.types.Operator):
         col_obj.select_set(True)
         context.view_layer.objects.active = col_obj
 
-        self.report({'INFO'}, f"Создан подогнанный Box Collider для '{act_obj.name}'")
+        self.report({'INFO'}, f"✓ Создан Box Collider для '{act_obj.name}'. Авто-меш коллизий внутри отключен для устранения лагов PhysX!")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_detect_and_disable_internal_meshes(bpy.types.Operator):
+    """Найти и отключить авто-меши внутри ручных Box-коллайдеров для ликвидации лагов"""
+    bl_idname = "varwin.detect_and_disable_internal_meshes"
+    bl_label = "Отключить авто-меши внутри Box"
+    bl_description = "Сканирует сцену, находит все визуальные меши внутри ручных Box-коллайдеров и отключает их авто-коллизии для ликвидации лагов PhysX"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        col_objs = get_scene_collider_objects(context.scene)
+        if not col_objs:
+            self.report({'WARNING'}, "В сцене нет ручных Box-коллайдеров. Создайте их перед проверкой!")
+            return {'CANCELLED'}
+
+        box_bounds = [get_box_collider_bounds(o) for o in col_objs if get_box_collider_bounds(o) is not None]
+        disabled_count = 0
+        poly_count = 0
+
+        for obj in context.scene.objects:
+            if obj.type == 'MESH' and not is_collider_object(obj):
+                is_inside, col_name = is_mesh_inside_box_colliders(obj, box_bounds)
+                if is_inside:
+                    obj["varwin_auto_collision_disabled"] = True
+                    if hasattr(obj, "varwin"):
+                        obj.varwin.auto_collision_disabled = True
+                    disabled_count += 1
+                    poly_count += len(obj.data.polygons) if obj.data else 0
+
+        self.report({'INFO'}, f"✓ Отключено {disabled_count} мешей ({poly_count} полигонов) внутри Box-коллайдеров. Лагов PhysX не будет!")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_enable_all_auto_collisions(bpy.types.Operator):
+    """Включить обратно все авто-меши сцены"""
+    bl_idname = "varwin.enable_all_auto_collisions"
+    bl_label = "Сбросить фильтр мешей"
+    bl_description = "Сбрасывает отметки отключения авто-коллизий со всех мешей сцены"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        count = 0
+        for obj in context.scene.objects:
+            if obj.get("varwin_auto_collision_disabled", False) or getattr(getattr(obj, "varwin", None), "auto_collision_disabled", False):
+                obj["varwin_auto_collision_disabled"] = False
+                if hasattr(obj, "varwin"):
+                    obj.varwin.auto_collision_disabled = False
+                count += 1
+        self.report({'INFO'}, f"Сброшено отключение для {count} объектов сцены.")
         return {'FINISHED'}
 
 
@@ -1629,6 +1710,187 @@ class VARWIN_OT_toggle_colliders_visibility(bpy.types.Operator):
         return {'FINISHED'}
 
 
+_saved_viewport_states = {}
+
+
+class VARWIN_OT_toggle_render_preview(bpy.types.Operator):
+    """Включить/выключить режим предпросмотра рендера Varwin (шейдинг PBR, освещение и корректная прозрачность)"""
+    bl_idname = "varwin.toggle_render_preview"
+    bl_label = "Предпросмотр рендера Varwin"
+    bl_description = "Переключает режим отображения Viewport для точной симуляции Unity-рендера Varwin (PBR, освещение, тени и прозрачность)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        global _saved_viewport_states
+        scene = context.scene
+        if not hasattr(scene, "varwin_scene"):
+            self.report({'WARNING'}, "Свойства Varwin не инициализированы")
+            return {'CANCELLED'}
+
+        vws = scene.varwin_scene
+        new_state = not vws.render_preview_active
+        vws.render_preview_active = new_state
+
+        preset_lights = {
+            'STUDIO': 'studio.exr',
+            'OUTDOOR': 'forest.exr',
+            'INDOOR': 'interior.exr',
+        }
+        target_light = preset_lights.get(vws.preview_lighting_preset, 'studio.exr')
+
+        # Apply to all 3D viewports in window manager
+        wm = context.window_manager
+        windows = getattr(wm, "windows", [])
+        if not windows and hasattr(context, "window") and context.window:
+            windows = [context.window]
+
+        for window in windows:
+            screen = getattr(window, "screen", None)
+            if not screen:
+                continue
+            for area in screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            sh = space.shading
+                            sp_key = space.as_pointer()
+                            if new_state:
+                                # Save original shading settings
+                                if sp_key not in _saved_viewport_states:
+                                    _saved_viewport_states[sp_key] = {
+                                        'shading_type': str(sh.type),
+                                        'studio_light': str(getattr(sh, 'studio_light', 'studio.exr')),
+                                        'use_scene_lights': bool(getattr(sh, 'use_scene_lights', False)),
+                                        'use_scene_world': bool(getattr(sh, 'use_scene_world', False)),
+                                    }
+
+                                # Set Material Preview mode (matches Unity PBR Standard shader)
+                                sh.type = 'MATERIAL'
+                                try:
+                                    sh.studio_light = target_light
+                                except Exception:
+                                    pass
+                                sh.use_scene_lights = False
+                                sh.use_scene_world = False
+                                if hasattr(sh, 'studiolight_intensity'):
+                                    sh.studiolight_intensity = 1.0
+                            else:
+                                # Restore previous state
+                                saved = _saved_viewport_states.pop(sp_key, {})
+                                prev_type = saved.get('shading_type', 'SOLID')
+                                try:
+                                    sh.type = prev_type
+                                except Exception:
+                                    pass
+                                if hasattr(sh, 'studio_light') and 'studio_light' in saved:
+                                    try:
+                                        sh.studio_light = saved['studio_light']
+                                    except Exception:
+                                        pass
+                                if hasattr(sh, 'use_scene_lights') and 'use_scene_lights' in saved:
+                                    sh.use_scene_lights = bool(saved['use_scene_lights'])
+                                if hasattr(sh, 'use_scene_world') and 'use_scene_world' in saved:
+                                    sh.use_scene_world = bool(saved['use_scene_world'])
+                    area.tag_redraw()
+
+        # If activating and auto-alpha is enabled, ensure materials with transparency have blend_method set properly
+        if new_state and vws.preview_auto_alpha:
+            for mat in bpy.data.materials:
+                if not mat:
+                    continue
+                is_transp = False
+                if mat.use_nodes and mat.node_tree:
+                    for node in mat.node_tree.nodes:
+                        if node.type == 'BSDF_PRINCIPLED':
+                            alpha_in = node.inputs.get('Alpha')
+                            if alpha_in:
+                                if alpha_in.is_linked:
+                                    is_transp = True
+                                elif float(alpha_in.default_value) < 0.999:
+                                    is_transp = True
+                            trans_in = node.inputs.get('Transmission Weight', node.inputs.get('Transmission'))
+                            if trans_in:
+                                if trans_in.is_linked:
+                                    is_transp = True
+                                elif float(trans_in.default_value) > 0.01:
+                                    is_transp = True
+                        elif node.type in ('BSDF_TRANSPARENT', 'BSDF_GLASS'):
+                            is_transp = True
+                if len(mat.diffuse_color) > 3 and mat.diffuse_color[3] < 0.999:
+                    is_transp = True
+
+                if is_transp:
+                    if hasattr(mat, 'blend_method') and mat.blend_method != 'BLEND':
+                        mat.blend_method = 'BLEND'
+                    if hasattr(mat, 'show_transparent_back'):
+                        mat.show_transparent_back = True
+
+        status_text = "включен" if new_state else "выключен"
+        self.report({'INFO'}, f"Предпросмотр рендера Varwin {status_text}")
+        return {'FINISHED'}
+
+
+def draw_varwin_shading_popover(self, context):
+    """Draws Varwin render preview controls directly into Blender's Viewport Shading tray popover."""
+    layout = self.layout
+    scene = getattr(context, "scene", None)
+    if not scene or not hasattr(scene, "varwin_scene"):
+        return
+    vws = scene.varwin_scene
+
+    box = layout.box()
+    row = box.row(align=True)
+    row.label(text="Рендер Varwin", icon='SHADING_RENDERED')
+
+    sub = box.row(align=True)
+    sub.scale_y = 1.25
+    if vws.render_preview_active:
+        sub.operator("varwin.toggle_render_preview", text="Рендер Varwin: ВКЛ", icon='CHECKBOX_HLT', depress=True)
+    else:
+        sub.operator("varwin.toggle_render_preview", text="Предпросмотр в рендере Varwin", icon='CHECKBOX_DEHLT')
+
+    if vws.render_preview_active:
+        box.prop(vws, "preview_lighting_preset", text="Окружение")
+        row_opt = box.row(align=True)
+        row_opt.prop(vws, "preview_auto_alpha", text="Прозрачность (Alpha)")
+
+
+def draw_varwin_header_shading(self, context):
+    """Draws quick Varwin render preview toggle directly into the 3D Viewport header next to shading mode buttons."""
+    layout = self.layout
+    scene = getattr(context, "scene", None)
+    if not scene or not hasattr(scene, "varwin_scene"):
+        return
+    vws = scene.varwin_scene
+
+    row = layout.row(align=True)
+    if vws.render_preview_active:
+        row.operator("varwin.toggle_render_preview", text="Varwin", icon='SHADING_RENDERED', depress=True)
+    else:
+        row.operator("varwin.toggle_render_preview", text="", icon='SHADING_RENDERED')
+
+
+def cleanup_shading_callbacks():
+    """Safely unregisters shading popover and header callbacks."""
+    if hasattr(bpy.types, "VIEW3D_PT_shading"):
+        funcs = getattr(bpy.types.VIEW3D_PT_shading, "_dyn_ui_initialize", lambda: [])()
+        for f in list(funcs):
+            if getattr(f, '__name__', '') == 'draw_varwin_shading_popover':
+                try:
+                    bpy.types.VIEW3D_PT_shading.remove(f)
+                except Exception:
+                    pass
+
+    if hasattr(bpy.types, "VIEW3D_HT_header"):
+        funcs_h = getattr(bpy.types.VIEW3D_HT_header, "_dyn_ui_initialize", lambda: [])()
+        for f in list(funcs_h):
+            if getattr(f, '__name__', '') == 'draw_varwin_header_shading':
+                try:
+                    bpy.types.VIEW3D_HT_header.remove(f)
+                except Exception:
+                    pass
+
+
 classes = (
     OBJECT_OT_varwin_export,
     SCENE_OT_varwin_export_vwt,
@@ -1647,6 +1909,9 @@ classes = (
     VARWIN_OT_add_floor_collider,
     VARWIN_OT_fit_collider_to_selection,
     VARWIN_OT_toggle_colliders_visibility,
+    VARWIN_OT_detect_and_disable_internal_meshes,
+    VARWIN_OT_enable_all_auto_collisions,
+    VARWIN_OT_toggle_render_preview,
     OBJECT_PT_varwin_object,
     SCENE_PT_varwin_scene,
     PROPERTIES_PT_varwin_main,
@@ -1658,8 +1923,14 @@ def register():
         bpy.utils.register_class(c)
     cleanup_header_callbacks()
     bpy.types.PROPERTIES_HT_header.append(properties_header_draw)
+    cleanup_shading_callbacks()
+    if hasattr(bpy.types, "VIEW3D_PT_shading"):
+        bpy.types.VIEW3D_PT_shading.prepend(draw_varwin_shading_popover)
+    if hasattr(bpy.types, "VIEW3D_HT_header"):
+        bpy.types.VIEW3D_HT_header.append(draw_varwin_header_shading)
 
 def unregister():
+    cleanup_shading_callbacks()
     cleanup_header_callbacks()
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

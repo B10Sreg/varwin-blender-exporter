@@ -96,6 +96,18 @@ def extract_image_texture(img):
         if im is None:
             return None
 
+        # Detect if texture actually has transparent pixels
+        has_alpha = False
+        if im.mode == 'RGBA':
+            try:
+                extrema = im.getextrema()
+                if len(extrema) >= 4:
+                    min_a, max_a = extrema[3]
+                    if min_a < 250:
+                        has_alpha = True
+            except Exception:
+                pass
+
         # Optimization for VR Quest 2: clamp max resolution to 2048x2048
         if max(im.width, im.height) > 2048:
             im.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
@@ -104,7 +116,8 @@ def extract_image_texture(img):
             'name': img.name,
             'width': im.width,
             'height': im.height,
-            'raw_rgba': im.tobytes()
+            'raw_rgba': im.tobytes(),
+            'has_alpha': has_alpha
         }
     except Exception as e:
         print(f"Warning: Failed to extract texture from image '{getattr(img, 'name', 'unknown')}': {e}")
@@ -138,8 +151,8 @@ def find_image_texture_node(input_socket, visited=None):
 
 def extract_material_properties(mat):
     """
-    Extracts PBR properties (Base Color, Metallic, Roughness, Glossiness, Emission,
-    and diffuse Image Texture) from a Blender Material.
+    Extracts PBR properties (Base Color, Alpha, Transmission, Metallic, Roughness, Glossiness,
+    Emission, blend mode, and diffuse Image Texture) from a Blender Material.
     """
     if not mat:
         return {
@@ -149,7 +162,11 @@ def extract_material_properties(mat):
             'roughness': 0.5,
             'glossiness': 0.5,
             'emission': (0.0, 0.0, 0.0, 1.0),
-            'texture': None
+            'texture': None,
+            'is_transparent': False,
+            'alpha': 1.0,
+            'transmission': 0.0,
+            'blend_mode': 'OPAQUE'
         }
 
     base_color = (0.8, 0.8, 0.8, 1.0)
@@ -157,6 +174,15 @@ def extract_material_properties(mat):
     roughness = 0.5
     emission = (0.0, 0.0, 0.0, 1.0)
     texture = None
+    alpha = 1.0
+    transmission = 0.0
+    is_transparent = False
+    blend_mode = 'OPAQUE'
+
+    # Check viewport diffuse color alpha
+    if len(mat.diffuse_color) > 3 and mat.diffuse_color[3] < 0.999:
+        alpha = float(mat.diffuse_color[3])
+        is_transparent = True
 
     if mat.use_nodes and mat.node_tree:
         for node in mat.node_tree.nodes:
@@ -189,6 +215,35 @@ def extract_material_properties(mat):
                     else:
                         base_color = tuple(float(c) for c in base_color_input.default_value[:4])
 
+                # Extract Alpha input socket
+                alpha_input = node.inputs.get('Alpha')
+                if alpha_input:
+                    if alpha_input.is_linked and alpha_input.links:
+                        is_transparent = True
+                        alpha_tex_node = find_image_texture_node(alpha_input)
+                        if alpha_tex_node and getattr(alpha_tex_node, 'image', None) and not texture:
+                            texture = extract_image_texture(alpha_tex_node.image)
+                    else:
+                        alpha_val = float(alpha_input.default_value)
+                        if alpha_val < 0.999:
+                            alpha = max(0.0, min(1.0, alpha_val))
+                            is_transparent = True
+
+                # Extract Transmission (Glass / Refraction / Water)
+                trans_input = node.inputs.get('Transmission Weight', node.inputs.get('Transmission'))
+                if trans_input:
+                    if trans_input.is_linked and trans_input.links:
+                        transmission = 1.0
+                        is_transparent = True
+                    else:
+                        tval = float(trans_input.default_value)
+                        if tval > 0.01:
+                            transmission = max(0.0, min(1.0, tval))
+                            is_transparent = True
+                            if alpha >= 0.999:
+                                # Convert high transmission into Unity alpha transparency
+                                alpha = max(0.1, 1.0 - transmission * 0.85)
+
                 if 'Metallic' in node.inputs:
                     metallic = float(node.inputs['Metallic'].default_value)
                 if 'Roughness' in node.inputs:
@@ -204,19 +259,48 @@ def extract_material_properties(mat):
                     else:
                         emission = (0.0, 0.0, 0.0, 1.0)
                 break
+
+        # Check for standalone transparent or glass shader nodes
+        for node in mat.node_tree.nodes:
+            if node.type == 'BSDF_TRANSPARENT':
+                is_transparent = True
+                alpha = min(alpha, 0.0)
+            elif node.type == 'BSDF_GLASS':
+                is_transparent = True
+                transmission = max(transmission, 1.0)
+                alpha = min(alpha, 0.2)
     else:
         base_color = tuple(float(c) for c in mat.diffuse_color[:4])
         metallic = float(getattr(mat, 'metallic', 0.0))
         roughness = float(getattr(mat, 'roughness', 0.5))
 
+    # Detect texture alpha channel
+    if texture and texture.get('has_alpha'):
+        is_transparent = True
+
+    # If transparent but user didn't specify CLIP cutout, use TRANSPARENT blend mode
+    if is_transparent and blend_mode == 'OPAQUE':
+        blend_mode = 'TRANSPARENT'
+
+    final_color = (
+        float(base_color[0]),
+        float(base_color[1]),
+        float(base_color[2]),
+        float(alpha)
+    )
+
     return {
         'name': mat.name,
-        'color': base_color,
+        'color': final_color,
         'metallic': max(0.0, min(1.0, metallic)),
         'roughness': max(0.0, min(1.0, roughness)),
         'glossiness': max(0.0, min(1.0, 1.0 - roughness)),
         'emission': emission,
-        'texture': texture
+        'texture': texture,
+        'is_transparent': is_transparent,
+        'alpha': alpha,
+        'transmission': transmission,
+        'blend_mode': blend_mode
     }
 
 
@@ -702,6 +786,119 @@ def get_scene_collider_objects(scene=None):
     return colliders
 
 
+def get_box_collider_bounds(col_obj):
+    """
+    Returns oriented bounding box (OBB) data in Blender world space for a manual box collider object.
+    Includes inverted world matrix, local bounds, and world AABB for broadphase acceleration.
+    """
+    if not col_obj or not hasattr(col_obj, 'bound_box') or col_obj.type != 'MESH':
+        return None
+
+    try:
+        min_l = mathutils.Vector((
+            min(p[0] for p in col_obj.bound_box),
+            min(p[1] for p in col_obj.bound_box),
+            min(p[2] for p in col_obj.bound_box)
+        ))
+        max_l = mathutils.Vector((
+            max(p[0] for p in col_obj.bound_box),
+            max(p[1] for p in col_obj.bound_box),
+            max(p[2] for p in col_obj.bound_box)
+        ))
+        inv_mat = col_obj.matrix_world.inverted()
+        world_corners = [col_obj.matrix_world @ mathutils.Vector(c) for c in col_obj.bound_box]
+        w_min = mathutils.Vector((min(c.x for c in world_corners), min(c.y for c in world_corners), min(c.z for c in world_corners)))
+        w_max = mathutils.Vector((max(c.x for c in world_corners), max(c.y for c in world_corners), max(c.z for c in world_corners)))
+    except Exception:
+        return None
+
+    floor_keywords = ('floor', 'teleport', 'walk', 'ground', 'pol', 'walkable')
+    is_floor = bool(col_obj.get('is_floor', False) or any(k in col_obj.name.lower() for k in floor_keywords))
+
+    return {
+        'obj': col_obj,
+        'name': col_obj.name,
+        'target_mesh': col_obj.get('target_mesh', ''),
+        'inv_mat': inv_mat,
+        'min_local': min_l,
+        'max_local': max_l,
+        'w_min': w_min,
+        'w_max': w_max,
+        'is_floor': is_floor,
+    }
+
+
+def is_point_inside_box(point_world, col_bounds, margin=0.005):
+    """
+    Checks if a Blender world coordinate point (mathutils.Vector) is inside the oriented box collider.
+    Uses margin (in meters) to account for slight boundary approximations.
+    """
+    if not col_bounds:
+        return False
+
+    w_min = col_bounds['w_min']
+    w_max = col_bounds['w_max']
+    # 1. Broadphase check (World AABB)
+    if (point_world.x < w_min.x - margin or point_world.x > w_max.x + margin or
+        point_world.y < w_min.y - margin or point_world.y > w_max.y + margin or
+        point_world.z < w_min.z - margin or point_world.z > w_max.z + margin):
+        return False
+
+    # 2. Narrowphase check (Local OBB via inverted world matrix)
+    try:
+        p_loc = col_bounds['inv_mat'] @ point_world
+        min_l = col_bounds['min_local']
+        max_l = col_bounds['max_local']
+        return (min_l.x - margin <= p_loc.x <= max_l.x + margin and
+                min_l.y - margin <= p_loc.y <= max_l.y + margin and
+                min_l.z - margin <= p_loc.z <= max_l.z + margin)
+    except Exception:
+        return False
+
+
+def is_mesh_inside_box_colliders(mesh_obj, box_bounds_list, margin=0.01):
+    """
+    Checks if a visual mesh object is inside or covered by any manual box collider.
+    Returns (True, collider_name) if covered, or (False, None).
+    """
+    if not mesh_obj or not box_bounds_list:
+        return False, None
+
+    # 1. Explicit tag check (set manually or via 'Подогнать Box под выделенный меш')
+    if mesh_obj.get('varwin_auto_collision_disabled', False):
+        return True, "marked_disabled"
+    if getattr(getattr(mesh_obj, 'varwin', None), 'auto_collision_disabled', False):
+        return True, "varwin_prop_disabled"
+
+    for cb in box_bounds_list:
+        if not cb:
+            continue
+        # Direct target reference from 'Подогнать Box под выделенный меш'
+        if cb['target_mesh'] and cb['target_mesh'] == mesh_obj.name:
+            return True, cb['name']
+
+        if not hasattr(mesh_obj, 'bound_box'):
+            continue
+
+        try:
+            # Check world bounds of mesh_obj
+            corners = [mesh_obj.matrix_world @ mathutils.Vector(c) for c in mesh_obj.bound_box]
+            center = sum(corners, mathutils.Vector()) / 8.0
+
+            # If center of the mesh is inside the box collider
+            if is_point_inside_box(center, cb, margin=margin):
+                return True, cb['name']
+
+            # If >= 4 of the 8 bounding corners are inside the box collider
+            inside_count = sum(1 for c in corners if is_point_inside_box(c, cb, margin=margin))
+            if inside_count >= 4:
+                return True, cb['name']
+        except Exception:
+            continue
+
+    return False, None
+
+
 def extract_custom_colliders(scene=None, root_obj=None):
     """
     Extracts custom level-design box/primitive colliders from the scene.
@@ -785,6 +982,9 @@ def extract_custom_colliders(scene=None, root_obj=None):
         'all_mesh': all_mesh,
         'wall_mesh': wall_mesh,
         'floor_mesh': floor_mesh,
+        'raw_all_triangles': all_triangles,
+        'raw_wall_triangles': wall_triangles,
+        'raw_floor_triangles': floor_triangles,
         'count': len(col_objs),
         'wall_count': len([o for o in col_objs if not any(k in o.name.lower() for k in floor_keywords)]),
         'floor_count': len([o for o in col_objs if any(k in o.name.lower() for k in floor_keywords)]),
@@ -812,6 +1012,14 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
 
     depsgraph = bpy.context.evaluated_depsgraph_get()
 
+    # Pre-extract active manual box colliders in the scene
+    col_objs = get_scene_collider_objects(scene)
+    box_bounds_list = [get_box_collider_bounds(o) for o in col_objs if get_box_collider_bounds(o) is not None]
+    disable_internal = bool(getattr(getattr(scene, 'varwin_scene', None), 'disable_internal_auto_meshes', True))
+
+    disabled_meshes_count = 0
+    skipped_triangles_count = 0
+
     vertices_data = []
     vert_map = {}
 
@@ -828,6 +1036,15 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
     all_triangles = []
 
     for obj in mesh_objs:
+        # Check if this visual mesh is inside any manual box collider
+        is_obj_inside_box = False
+        covering_box_name = None
+        if disable_internal and box_bounds_list:
+            is_obj_inside_box, covering_box_name = is_mesh_inside_box_colliders(obj, box_bounds_list)
+            if is_obj_inside_box:
+                disabled_meshes_count += 1
+                print(f"[Varwin Exporter] 🛡️ Авто-коллизия отключена для '{obj.name}' (находится внутри ручного Box '{covering_box_name}') — ликвидация лагов PhysX.")
+
         eval_obj = obj.evaluated_get(depsgraph) if apply_modifiers else obj
         mesh = eval_obj.to_mesh()
 
@@ -946,6 +1163,24 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
             avg_ny = (tri_verts[0][4] + tri_verts[1][4] + tri_verts[2][4]) / 3.0
             avg_py = (tri_verts[0][1] + tri_verts[1][1] + tri_verts[2][1]) / 3.0
 
+            all_triangles.append(tri_verts)
+
+            # If the entire object is inside a manual box collider, skip automatic collision geometry!
+            if is_obj_inside_box:
+                skipped_triangles_count += 1
+                continue
+
+            # Fine-grained check: if this specific triangle centroid is inside a manual box collider, skip it!
+            if disable_internal and box_bounds_list:
+                tri_center_world = (
+                    mat_world @ mesh.vertices[tri.vertices[0]].co +
+                    mat_world @ mesh.vertices[tri.vertices[1]].co +
+                    mat_world @ mesh.vertices[tri.vertices[2]].co
+                ) / 3.0
+                if any(is_point_inside_box(tri_center_world, cb) for cb in box_bounds_list):
+                    skipped_triangles_count += 1
+                    continue
+
             # 1. Walkable floor (normal up, ground or pedestrian elevation <= 2.5m, not vegetation)
             if not is_foliage and avg_ny > 0.6 and (avg_py <= 0.35 or (is_ground_obj and -2.0 <= avg_py <= 3.0) or (-1.5 <= avg_py <= 2.5 and not obj.name.startswith(('Bldg_', 'Building_', 'Wall_', 'Roof_')))):
                 floor_triangles.append(tri_verts)
@@ -954,8 +1189,6 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
             is_ceiling = (avg_ny < -0.5 and avg_py > 1.8) or (avg_py > 2.65 and avg_ny < -0.2)
             if not is_ceiling and not is_foliage:
                 collision_triangles.append(tri_verts)
-
-            all_triangles.append(tri_verts)
 
         if apply_modifiers:
             eval_obj.to_mesh_clear()
@@ -1018,10 +1251,17 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
     # Check if custom level-design colliders exist in scene
     custom_col = extract_custom_colliders(scene, root_obj=None)
     if custom_col:
-        collision_mesh_dict = custom_col['wall_mesh']
-        floor_mesh_dict = custom_col['floor_mesh']
         custom_used = True
         custom_count = custom_col['count']
+        # HYBRID SMART COLLISION:
+        # 1. Custom box colliders provide collision for the areas they enclose
+        # 2. Remaining collision_triangles provide automatic collision for geometry outside box colliders
+        # (All automatic collision geometry inside box colliders was already stripped above!)
+        combined_walls = custom_col['raw_wall_triangles'] + collision_triangles
+        combined_floors = custom_col['raw_floor_triangles'] + floor_triangles if custom_col['raw_floor_triangles'] else floor_triangles
+        collision_mesh_dict = _pack_triangles(combined_walls) if combined_walls else custom_col['wall_mesh']
+        floor_mesh_dict = _pack_triangles(combined_floors) if combined_floors else custom_col['floor_mesh']
+        print(f"[Varwin Exporter] 🚀 Собрана гибридная коллизия сцены: {custom_count} ручных Box + {len(collision_triangles)} авто-полигонов (отключено {skipped_triangles_count} полигонов в {disabled_meshes_count} мешах внутри Box).")
     else:
         # Fallbacks if floor or collision filters were too strict
         if not floor_triangles:

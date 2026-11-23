@@ -381,6 +381,11 @@ class VarwinObjectProperties(bpy.types.PropertyGroup):
         default=True,
         description="Опционально: зарегистрировать созданный объект в локальной библиотеке Varwin XRMS"
     )
+    auto_collision_disabled: bpy.props.BoolProperty(
+        name="Авто-коллизия отключена",
+        default=False,
+        description="Автоматическая полигональная меш-коллизия отключена (объект использует ручной Box-коллайдер для устранения лагов PhysX)"
+    )
 
 
 class VarwinSceneProperties(bpy.types.PropertyGroup):
@@ -521,6 +526,55 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         name="Установить в Varwin",
         default=True,
         description="Опционально: автоматически зарегистрировать шаблон сцены в локальной библиотеке Varwin XRMS"
+    )
+    disable_internal_auto_meshes: bpy.props.BoolProperty(
+        name="Отключать авто-меши внутри Box",
+        default=True,
+        description="Автоматически отключать генерацию тяжелых полигональных меш-коллайдеров для объектов и полигонов, находящихся внутри ручных Box-коллайдеров (устраняет просадки FPS и лаги PhysX)"
+    )
+
+    # Varwin Viewport Render Preview properties
+    def update_preview_preset(self, context):
+        if not getattr(self, "render_preview_active", False):
+            return
+        preset_lights = {
+            'STUDIO': 'studio.exr',
+            'OUTDOOR': 'forest.exr',
+            'INDOOR': 'interior.exr',
+        }
+        target_light = preset_lights.get(self.preview_lighting_preset, 'studio.exr')
+        if context and hasattr(context, "screen") and context.screen:
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for space in area.spaces:
+                        if space.type == 'VIEW_3D':
+                            sh = space.shading
+                            try:
+                                sh.studio_light = target_light
+                            except Exception:
+                                pass
+                    area.tag_redraw()
+
+    render_preview_active: bpy.props.BoolProperty(
+        name="Предпросмотр рендера Varwin",
+        default=False,
+        description="Режим предпросмотра модели: PBR шейдинг, освещение и прозрачность как в рантайме Varwin (Unity Standard Shader)"
+    )
+    preview_lighting_preset: bpy.props.EnumProperty(
+        name="Окружение Varwin",
+        items=[
+            ("STUDIO", "Студия (Varwin)", "Стандартное студийное освещение и отражения Varwin", "LIGHT_SUN", 0),
+            ("OUTDOOR", "Улица / День", "Яркое дневное уличное освещение", "LIGHT_HEMI", 1),
+            ("INDOOR", "Интерьер", "Мягкое освещение закрытого помещения", "LIGHT_AREA", 2),
+        ],
+        default="STUDIO",
+        update=update_preview_preset,
+        description="Пресет окружения и освещения для предпросмотра рендера Varwin"
+    )
+    preview_auto_alpha: bpy.props.BoolProperty(
+        name="Авто-прозрачность в Viewport",
+        default=True,
+        description="Автоматически включать альфа-блендинг материалов в Viewport, чтобы прозрачные объекты отображались корректно"
     )
 
 
