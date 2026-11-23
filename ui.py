@@ -1745,7 +1745,9 @@ def ensure_varwin_standard_material(mat, clamp_metallic=True, auto_alpha=True):
     Ensures a Blender material conforms to the Varwin/Standard Unity shader specification:
     - Principled BSDF node tree setup.
     - Metallic clamped to <= 0.80 to prevent black reflection voids in Unity Varwin.
-    - Correct viewport blend_method ('BLEND') for materials with transparency or transmission.
+    - Correct viewport blend_method ('BLEND') and surface_render_method ('BLENDED') for transparency.
+    - Raytraced refraction and transparent shadows enabled for EEVEE.
+    - Balanced roughness (smoothness) and dielectric specular IOR 1.5.
     - Tags material with Varwin/Standard shader metadata.
     """
     if not mat:
@@ -1794,9 +1796,23 @@ def ensure_varwin_standard_material(mat, clamp_metallic=True, auto_alpha=True):
                 met_in.default_value = 0.80
                 changed = True
 
+    # Balance Specular and IOR according to Unity Standard Shader specs
+    if bsdf:
+        ior_in = bsdf.inputs.get('IOR')
+        if ior_in and not ior_in.is_linked:
+            if abs(float(ior_in.default_value) - 1.5) > 0.01:
+                ior_in.default_value = 1.50
+                changed = True
+        spec_in = bsdf.inputs.get('Specular IOR Level', bsdf.inputs.get('Specular'))
+        if spec_in and not spec_in.is_linked:
+            if abs(float(spec_in.default_value) - 0.5) > 0.01:
+                spec_in.default_value = 0.50
+                changed = True
+
     # Check and enforce Transparency / Alpha blend mode
     if auto_alpha:
         is_transp = False
+        has_transmission = False
         if bsdf:
             alpha_in = bsdf.inputs.get('Alpha')
             if alpha_in:
@@ -1809,23 +1825,44 @@ def ensure_varwin_standard_material(mat, clamp_metallic=True, auto_alpha=True):
             if trans_in:
                 if trans_in.is_linked:
                     is_transp = True
+                    has_transmission = True
                 elif float(trans_in.default_value) > 0.01:
                     is_transp = True
+                    has_transmission = True
 
         for n in nodes:
             if n.type in ('BSDF_TRANSPARENT', 'BSDF_GLASS'):
                 is_transp = True
+                if n.type == 'BSDF_GLASS':
+                    has_transmission = True
                 break
 
         if len(mat.diffuse_color) > 3 and mat.diffuse_color[3] < 0.999:
             is_transp = True
 
         if is_transp:
+            if hasattr(mat, 'surface_render_method') and mat.surface_render_method != 'BLENDED':
+                mat.surface_render_method = 'BLENDED'
+                changed = True
             if hasattr(mat, 'blend_method') and mat.blend_method != 'BLEND':
                 mat.blend_method = 'BLEND'
                 changed = True
             if hasattr(mat, 'show_transparent_back') and not mat.show_transparent_back:
                 mat.show_transparent_back = True
+                changed = True
+            if hasattr(mat, 'use_transparent_shadow') and not mat.use_transparent_shadow:
+                mat.use_transparent_shadow = True
+                changed = True
+            if hasattr(mat, 'use_backface_culling_shadow') and mat.use_backface_culling_shadow:
+                mat.use_backface_culling_shadow = False
+                changed = True
+            if has_transmission and hasattr(mat, 'use_raytrace_refraction') and not mat.use_raytrace_refraction:
+                mat.use_raytrace_refraction = True
+                changed = True
+        else:
+            if hasattr(mat, 'blend_method') and mat.blend_method == 'BLEND':
+                # Revert opaque if no alpha is present
+                mat.blend_method = 'OPAQUE'
                 changed = True
 
     mat["varwin_standard_shader"] = "Varwin/Standard"
@@ -1871,15 +1908,104 @@ def apply_varwin_standard_materials(context, clamp_metallic=True, assign_missing
                 vl.material_override = None
 
 
+def _build_varwin_world_nodes(world, preset, amb_str):
+    """Constructs or updates the Varwin procedural ambient sky gradient world node tree."""
+    if not world:
+        return
+    if not world.node_tree:
+        try:
+            world.use_nodes = True
+        except Exception:
+            pass
+    if not world.node_tree:
+        return
+
+    nt = world.node_tree
+    nt.nodes.clear()
+
+    tc = nt.nodes.new('ShaderNodeTexCoord')
+    sep = nt.nodes.new('ShaderNodeSeparateXYZ')
+    nt.links.new(tc.outputs['Normal'], sep.inputs['Vector'])
+
+    map_range = nt.nodes.new('ShaderNodeMapRange')
+    map_range.inputs['From Min'].default_value = -1.0
+    map_range.inputs['From Max'].default_value = 1.0
+    map_range.inputs['To Min'].default_value = 0.0
+    map_range.inputs['To Max'].default_value = 1.0
+    nt.links.new(sep.outputs['Z'], map_range.inputs['Value'])
+
+    ramp = nt.nodes.new('ShaderNodeValToRGB')
+    if preset == 'STUDIO':
+        ground_c = (0.22, 0.22, 0.24, 1.0)
+        horizon_c = (0.50, 0.51, 0.53, 1.0)
+        sky_c = (0.42, 0.48, 0.58, 1.0)
+    elif preset == 'OUTDOOR':
+        ground_c = (0.28, 0.26, 0.20, 1.0)
+        horizon_c = (0.68, 0.72, 0.76, 1.0)
+        sky_c = (0.35, 0.55, 0.85, 1.0)
+    elif preset == 'INDOOR':
+        ground_c = (0.32, 0.28, 0.25, 1.0)
+        horizon_c = (0.52, 0.50, 0.48, 1.0)
+        sky_c = (0.58, 0.54, 0.50, 1.0)
+    else:
+        ground_c = (0.22, 0.22, 0.24, 1.0)
+        horizon_c = (0.50, 0.51, 0.53, 1.0)
+        sky_c = (0.42, 0.48, 0.58, 1.0)
+
+    ramp.color_ramp.elements[0].position = 0.35
+    ramp.color_ramp.elements[0].color = ground_c
+    ramp.color_ramp.elements[1].position = 0.70
+    ramp.color_ramp.elements[1].color = sky_c
+    el_mid = ramp.color_ramp.elements.new(0.50)
+    el_mid.color = horizon_c
+    nt.links.new(map_range.outputs['Result'], ramp.inputs['Fac'])
+
+    bg = nt.nodes.new('ShaderNodeBackground')
+    bg.inputs['Strength'].default_value = amb_str
+    nt.links.new(ramp.outputs['Color'], bg.inputs['Color'])
+
+    out = nt.nodes.new('ShaderNodeOutputWorld')
+    nt.links.new(bg.outputs['Background'], out.inputs['Surface'])
+
+
 def setup_varwin_render_rig(context, scene, vws):
     """
     Creates and activates the Varwin Render Rig for 100% Unity parity:
+    - EEVEE Real-time Raytracing (SSR, Screen-Space Refraction) & Fast GI (SSAO Ambient Occlusion)
     - Varwin Directional Sun Light (with soft shadows and correct angles)
     - Varwin Ground / Shadow Catcher Plane (placed right at z_min of scene objects)
-    - Varwin Ambient Sky / World (filling shadows with ambient color)
+    - Varwin Ambient Sky / World (filling shadows with ambient gradient matching Unity)
     """
     if not scene:
         return None
+
+    # Configure EEVEE parameters for 100% Unity Engine parity
+    if hasattr(scene, "eevee"):
+        eevee = scene.eevee
+        if 'eevee_settings' not in _saved_viewport_states:
+            _saved_viewport_states['eevee_settings'] = {
+                'use_raytracing': getattr(eevee, 'use_raytracing', False),
+                'use_fast_gi': getattr(eevee, 'use_fast_gi', False),
+                'fast_gi_method': getattr(eevee, 'fast_gi_method', 'GLOBAL_ILLUMINATION'),
+                'fast_gi_distance': getattr(eevee, 'fast_gi_distance', 4.0),
+                'fast_gi_quality': getattr(eevee, 'fast_gi_quality', 1.0),
+                'fast_gi_bias': getattr(eevee, 'fast_gi_bias', 0.05),
+                'shadow_ray_count': getattr(eevee, 'shadow_ray_count', 1),
+                'shadow_resolution_scale': getattr(eevee, 'shadow_resolution_scale', 1.0),
+                'use_shadows': getattr(eevee, 'use_shadows', True),
+            }
+        try:
+            eevee.use_raytracing = True
+            eevee.use_fast_gi = True
+            eevee.fast_gi_method = 'GLOBAL_ILLUMINATION'
+            eevee.fast_gi_distance = 4.0
+            eevee.fast_gi_quality = 1.0
+            eevee.fast_gi_bias = 0.05
+            eevee.shadow_ray_count = 2
+            eevee.shadow_resolution_scale = 1.0
+            eevee.use_shadows = True
+        except Exception:
+            pass
 
     col_name = "Varwin_Render_Preview_Rig"
     col = bpy.data.collections.get(col_name)
@@ -1898,19 +2024,19 @@ def setup_varwin_render_rig(context, scene, vws):
 
     # Orientation matching Varwin Directional Light_BAKED (50° pitch, -15° yaw, -30° roll)
     sun_obj.rotation_euler = (math.radians(50), math.radians(-15), math.radians(-30))
-    sun_energy = getattr(vws, "preview_sun_intensity", 2.5) if vws else 2.5
+    sun_energy = getattr(vws, "preview_sun_intensity", 1.5) if vws else 1.5
     sun_obj.data.energy = sun_energy
 
     preset = getattr(vws, "preview_lighting_preset", "STUDIO") if vws else "STUDIO"
     if preset == 'STUDIO':
-        sun_obj.data.color = (1.0, 1.0, 1.0)
+        sun_obj.data.color = (1.0, 0.98, 0.94)
     elif preset == 'OUTDOOR':
-        sun_obj.data.color = getattr(vws, "light_color", (1.0, 0.98, 0.92))
+        sun_obj.data.color = getattr(vws, "light_color", (1.0, 0.96, 0.88))
     elif preset == 'INDOOR':
-        sun_obj.data.color = (1.0, 0.95, 0.88)
+        sun_obj.data.color = (1.0, 0.92, 0.82)
 
     if hasattr(sun_obj.data, "shadow_soft_size"):
-        sun_obj.data.shadow_soft_size = getattr(vws, "preview_shadow_softness", 0.15) if vws else 0.15
+        sun_obj.data.shadow_soft_size = getattr(vws, "preview_shadow_softness", 0.06) if vws else 0.06
 
     # 2. Varwin Floor / Shadow Catcher Plane
     # Calculate lowest Z boundary across visual meshes
@@ -1945,29 +2071,13 @@ def setup_varwin_render_rig(context, scene, vws):
     show_floor = getattr(vws, "preview_show_floor", True) if vws else True
     floor_obj.hide_viewport = not show_floor
 
-    # 3. Varwin Ambient World
+    # 3. Varwin Ambient Sky World (Gradient matching Unity Ambient Environment)
     w_name = "Varwin_Preview_World"
     world = bpy.data.worlds.get(w_name)
     if not world:
         world = bpy.data.worlds.new(w_name)
-    if not world.node_tree:
-        try:
-            world.use_nodes = True
-        except Exception:
-            pass
-    bg = world.node_tree.nodes.get("Background") if world.node_tree else None
-    if bg:
-        amb_str = getattr(vws, "preview_ambient_intensity", 0.70) if vws else 0.70
-        if preset == 'STUDIO':
-            amb_col = (0.75, 0.75, 0.75)
-        elif preset == 'OUTDOOR':
-            amb_col = getattr(vws, "ambient_color", (0.65, 0.75, 0.90))
-        elif preset == 'INDOOR':
-            amb_col = (0.80, 0.78, 0.75)
-        else:
-            amb_col = (0.68, 0.70, 0.75)
-        bg.inputs['Color'].default_value = (*amb_col, 1.0)
-        bg.inputs['Strength'].default_value = amb_str
+    amb_str = getattr(vws, "preview_ambient_intensity", 0.55) if vws else 0.55
+    _build_varwin_world_nodes(world, preset, amb_str)
     scene.world = world
 
     return col
@@ -1977,6 +2087,16 @@ def cleanup_varwin_render_rig(scene):
     """Safely removes the Varwin preview rig (sun, shadow floor, world) from the scene."""
     if not scene:
         return
+
+    # Restore EEVEE settings
+    if hasattr(scene, "eevee") and 'eevee_settings' in _saved_viewport_states:
+        saved_ev = _saved_viewport_states.pop('eevee_settings', {})
+        for k, v in saved_ev.items():
+            try:
+                setattr(scene.eevee, k, v)
+            except Exception:
+                pass
+
     col_name = "Varwin_Render_Preview_Rig"
     col = bpy.data.collections.get(col_name)
     if col:
@@ -2021,41 +2141,31 @@ def update_varwin_render_rig_params(scene, vws):
     if not col:
         return
 
+    preset = getattr(vws, "preview_lighting_preset", "STUDIO")
+
     # Update Sun
     sun_obj = col.objects.get("Varwin_Preview_Sun")
     if sun_obj and sun_obj.data:
-        sun_obj.data.energy = getattr(vws, "preview_sun_intensity", 2.5)
+        sun_obj.data.energy = getattr(vws, "preview_sun_intensity", 1.5)
         if hasattr(sun_obj.data, "shadow_soft_size"):
-            sun_obj.data.shadow_soft_size = getattr(vws, "preview_shadow_softness", 0.15)
-        preset = getattr(vws, "preview_lighting_preset", "STUDIO")
+            sun_obj.data.shadow_soft_size = getattr(vws, "preview_shadow_softness", 0.06)
         if preset == 'STUDIO':
-            sun_obj.data.color = (1.0, 1.0, 1.0)
+            sun_obj.data.color = (1.0, 0.98, 0.94)
         elif preset == 'OUTDOOR':
-            sun_obj.data.color = getattr(vws, "light_color", (1.0, 0.98, 0.92))
+            sun_obj.data.color = getattr(vws, "light_color", (1.0, 0.96, 0.88))
         elif preset == 'INDOOR':
-            sun_obj.data.color = (1.0, 0.95, 0.88)
+            sun_obj.data.color = (1.0, 0.92, 0.82)
 
     # Update Floor
     floor_obj = col.objects.get("Varwin_Preview_Floor")
     if floor_obj:
         floor_obj.hide_viewport = not getattr(vws, "preview_show_floor", True)
 
-    # Update World
+    # Update World Gradient
     world = bpy.data.worlds.get("Varwin_Preview_World")
-    if world and world.node_tree:
-        bg = world.node_tree.nodes.get("Background")
-        if bg:
-            preset = getattr(vws, "preview_lighting_preset", "STUDIO")
-            if preset == 'STUDIO':
-                amb_col = (0.75, 0.75, 0.75)
-            elif preset == 'OUTDOOR':
-                amb_col = getattr(vws, "ambient_color", (0.65, 0.75, 0.90))
-            elif preset == 'INDOOR':
-                amb_col = (0.80, 0.78, 0.75)
-            else:
-                amb_col = (0.68, 0.70, 0.75)
-            bg.inputs['Color'].default_value = (*amb_col, 1.0)
-            bg.inputs['Strength'].default_value = getattr(vws, "preview_ambient_intensity", 0.70)
+    if world:
+        amb_str = getattr(vws, "preview_ambient_intensity", 0.55)
+        _build_varwin_world_nodes(world, preset, amb_str)
 
 
 def update_varwin_render_preview_mode(context):
@@ -2310,9 +2420,8 @@ class VARWIN_OT_new_standard_material(bpy.types.Operator):
         return {'FINISHED'}
 
 
-def draw_varwin_shading_popover(self, context):
+def draw_varwin_shading_popover_content(layout, context):
     """Draws Varwin render preview controls directly into Blender's Viewport Shading tray popover."""
-    layout = self.layout
     scene = getattr(context, "scene", None)
     if not scene or not hasattr(scene, "varwin_scene"):
         return
@@ -2362,6 +2471,23 @@ def draw_varwin_shading_popover(self, context):
         row_cm.label(text="Цветопередача: Unity Standard sRGB", icon='RESTRICT_COLOR_OFF')
 
 
+class VIEW3D_PT_shading_varwin(bpy.types.Panel):
+    """Нативная секция предпросмотра рендера Varwin внутри popover Viewport Shading"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_parent_id = 'VIEW3D_PT_shading'
+    bl_label = "Рендер Varwin (100% Unity Parity)"
+    bl_order = 0
+
+    def draw(self, context):
+        draw_varwin_shading_popover_content(self.layout, context)
+
+
+def draw_varwin_shading_popover(self, context):
+    """Draws Varwin render preview controls directly into Blender's Viewport Shading tray popover."""
+    draw_varwin_shading_popover_content(self.layout, context)
+
+
 def draw_varwin_header_shading(self, context):
     """Draws quick Varwin render preview toggle directly into the 3D Viewport header next to shading mode buttons."""
     layout = self.layout
@@ -2373,9 +2499,11 @@ def draw_varwin_header_shading(self, context):
     row = layout.row(align=True)
     if vws.render_preview_active:
         mode_label = "Varwin 100%" if getattr(vws, 'preview_render_mode', 'FULL_UNITY') == 'FULL_UNITY' else "Varwin PBR"
+        if getattr(vws, 'preview_material_mode', 'STANDARD_PBR') == 'DEFAULT_CLAY':
+            mode_label += " (Def)"
         row.operator("varwin.toggle_render_preview", text=mode_label, icon='SHADING_RENDERED', depress=True)
     else:
-        row.operator("varwin.toggle_render_preview", text="", icon='SHADING_RENDERED')
+        row.operator("varwin.toggle_render_preview", text="Рендер Varwin", icon='SHADING_RENDERED')
 
 
 def cleanup_shading_callbacks():
@@ -2426,6 +2554,7 @@ classes = (
     SCENE_PT_varwin_scene,
     PROPERTIES_PT_varwin_main,
     VIEW3D_PT_varwin_main,
+    VIEW3D_PT_shading_varwin,
 )
 
 def register():

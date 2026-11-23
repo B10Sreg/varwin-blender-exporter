@@ -625,7 +625,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     )
     preview_sun_intensity: bpy.props.FloatProperty(
         name="Сила солнца",
-        default=2.5,
+        default=1.5,
         min=0.1,
         max=10.0,
         update=update_preview_rig_params,
@@ -633,7 +633,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     )
     preview_shadow_softness: bpy.props.FloatProperty(
         name="Мягкость теней",
-        default=0.15,
+        default=0.06,
         min=0.0,
         max=1.0,
         update=update_preview_rig_params,
@@ -641,7 +641,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     )
     preview_ambient_intensity: bpy.props.FloatProperty(
         name="Заполнение (Ambient)",
-        default=0.70,
+        default=0.55,
         min=0.0,
         max=2.0,
         update=update_preview_rig_params,
