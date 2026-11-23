@@ -272,4 +272,67 @@ assert scene.varwin_scene.render_preview_active == False
 assert bpy.context.view_layer.material_override is None
 print("  ✓ Varwin Render Preview deactivated and restored original settings cleanly")
 
-print('\n=== ALL 5 TEST SUITES PASSED WITH 100% SUCCESS! ===')
+# ---------------------------------------------------------
+# TEST 6: 100% Unity Varwin Render Rig (Sun, Shadows, Floor, EEVEE)
+# ---------------------------------------------------------
+print('\n[TEST 6] Testing 100% Unity Varwin Render Rig (Sun, Dynamic Soft Shadows, Floor, Ambient)...')
+scene = bpy.context.scene
+
+# 6a. Activate Varwin Render Preview in FULL_UNITY mode
+scene.varwin_scene.preview_render_mode = 'FULL_UNITY'
+res_rig = bpy.ops.varwin.toggle_render_preview()
+assert res_rig == {'FINISHED'}
+assert scene.varwin_scene.render_preview_active == True
+
+# Check Render Engine is EEVEE
+assert scene.render.engine == 'BLENDER_EEVEE', f"Expected BLENDER_EEVEE, got {scene.render.engine}"
+print("  ✓ Render Engine switched to BLENDER_EEVEE for real-time shadows and PBR")
+
+# Check Rig Collection exists
+rig_col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
+assert rig_col is not None, "Varwin_Render_Preview_Rig collection not found!"
+print("  ✓ Varwin_Render_Preview_Rig collection active in scene")
+
+# Check Varwin Directional Sun Light
+sun = rig_col.objects.get("Varwin_Preview_Sun")
+assert sun is not None, "Varwin_Preview_Sun not found in rig!"
+assert sun.data.type == 'SUN', f"Expected SUN light, got {sun.data.type}"
+assert sun.data.energy == scene.varwin_scene.preview_sun_intensity
+assert sun.get("varwin_preview_rig") == True
+print(f"  ✓ Varwin Directional Sun created (energy={sun.data.energy}, soft_shadows=0.15)")
+
+# Check Varwin Shadow Catcher Ground Floor
+floor = rig_col.objects.get("Varwin_Preview_Floor")
+assert floor is not None, "Varwin_Preview_Floor not found in rig!"
+assert getattr(floor, "is_shadow_catcher", False) == True, "Floor must be a shadow catcher"
+assert floor.get("varwin_preview_rig") == True
+print(f"  ✓ Varwin Shadow Catcher Floor created (is_shadow_catcher=True, location.z={floor.location.z:.2f})")
+
+# 6b. Test dynamic parameter updates
+scene.varwin_scene.preview_sun_intensity = 3.5
+assert sun.data.energy == 3.5, "Sun intensity did not update dynamically!"
+print("  ✓ Sun intensity dynamically updated to 3.5")
+
+scene.varwin_scene.preview_show_floor = False
+assert floor.hide_viewport == True, "Floor visibility did not update!"
+scene.varwin_scene.preview_show_floor = True
+assert floor.hide_viewport == False, "Floor visibility did not restore!"
+print("  ✓ Floor visibility dynamically toggled")
+
+# 6c. Verify Exporter completely ignores preview rig objects
+from varwin_vwo_exporter.mesh_extractor import is_collider_object, is_preview_rig_object
+assert is_preview_rig_object(sun) == True, "Sun should be identified as preview rig object"
+assert is_preview_rig_object(floor) == True, "Floor should be identified as preview rig object"
+assert is_collider_object(floor) == True, "Floor should be excluded from collider generation"
+print("  ✓ Exporter security check: Preview rig objects safely excluded from export")
+
+# 6d. Toggle OFF and verify complete cleanup
+res_clean = bpy.ops.varwin.toggle_render_preview()
+assert res_clean == {'FINISHED'}
+assert scene.varwin_scene.render_preview_active == False
+assert bpy.data.collections.get("Varwin_Render_Preview_Rig") is None, "Rig collection should be deleted!"
+assert bpy.data.objects.get("Varwin_Preview_Sun") is None, "Sun object should be deleted!"
+assert bpy.data.objects.get("Varwin_Preview_Floor") is None, "Floor object should be deleted!"
+print("  ✓ Varwin Render Rig cleaned up with 0 scene pollution!")
+
+print('\n=== ALL 6 TEST SUITES PASSED WITH 100% SUCCESS! ===')

@@ -554,6 +554,22 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
                             except Exception:
                                 pass
                     area.tag_redraw()
+        from .ui import update_varwin_render_rig_params
+        scene = getattr(context, "scene", None) or bpy.context.scene
+        update_varwin_render_rig_params(scene, self)
+
+    def update_preview_render_mode(self, context):
+        if not getattr(self, "render_preview_active", False):
+            return
+        from .ui import update_varwin_render_preview_mode
+        update_varwin_render_preview_mode(context)
+
+    def update_preview_rig_params(self, context):
+        if not getattr(self, "render_preview_active", False):
+            return
+        from .ui import update_varwin_render_rig_params
+        scene = getattr(context, "scene", None) or bpy.context.scene
+        update_varwin_render_rig_params(scene, self)
 
     def update_preview_material_mode(self, context):
         if not getattr(self, "render_preview_active", False):
@@ -578,18 +594,58 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     render_preview_active: bpy.props.BoolProperty(
         name="Предпросмотр рендера Varwin",
         default=False,
-        description="Режим предпросмотра модели: PBR шейдинг, освещение и прозрачность как в рантайме Varwin (Unity Standard Shader)"
+        description="Режим предпросмотра модели: 100% Unity рантайм (мягкие тени, солнце, теневой пол, рассеянный свет, Unity sRGB и Varwin Standard PBR)"
+    )
+    preview_render_mode: bpy.props.EnumProperty(
+        name="Режим рендера",
+        items=[
+            ("FULL_UNITY", "100% Рендер Unity (Солнце, Тени, Пол, Ambient)", "Точная симуляция рантайма Unity: солнце, мягкие динамические тени, теневой пол, рассеянный свет и PBR", "SHADING_RENDERED", 0),
+            ("MATERIAL_STUDIO", "Студийный Material Preview", "Облегченный PBR предпросмотр со студийным светом HDRI без теней от солнца", "SHADING_TEXTURE", 1),
+        ],
+        default="FULL_UNITY",
+        update=update_preview_render_mode,
+        description="Режим рендера предпросмотра: 100% Unity Parity (с тенями и солнцем) или легкий Material Preview"
     )
     preview_lighting_preset: bpy.props.EnumProperty(
         name="Окружение Varwin",
         items=[
             ("STUDIO", "Студия (Varwin)", "Стандартное студийное освещение и отражения Varwin", "LIGHT_SUN", 0),
-            ("OUTDOOR", "Улица / День", "Яркое дневное уличное освещение", "LIGHT_HEMI", 1),
+            ("OUTDOOR", "Улица / День", "Яркое дневное уличное освещение и мягкие тени солнца", "LIGHT_HEMI", 1),
             ("INDOOR", "Интерьер", "Мягкое освещение закрытого помещения", "LIGHT_AREA", 2),
         ],
         default="STUDIO",
         update=update_preview_preset,
         description="Пресет окружения и освещения для предпросмотра рендера Varwin"
+    )
+    preview_show_floor: bpy.props.BoolProperty(
+        name="Теневой пол (Shadow Catcher)",
+        default=True,
+        update=update_preview_rig_params,
+        description="Отображать плоскость пола под объектом для реалистичных мягких теней, как в редакторе Varwin"
+    )
+    preview_sun_intensity: bpy.props.FloatProperty(
+        name="Сила солнца",
+        default=2.5,
+        min=0.1,
+        max=10.0,
+        update=update_preview_rig_params,
+        description="Интенсивность направленного источника света (Солнце Varwin)"
+    )
+    preview_shadow_softness: bpy.props.FloatProperty(
+        name="Мягкость теней",
+        default=0.15,
+        min=0.0,
+        max=1.0,
+        update=update_preview_rig_params,
+        description="Мягкость размытия границ теней солнца"
+    )
+    preview_ambient_intensity: bpy.props.FloatProperty(
+        name="Заполнение (Ambient)",
+        default=0.70,
+        min=0.0,
+        max=2.0,
+        update=update_preview_rig_params,
+        description="Интенсивность окружающего рассеянного света для заполнения теней"
     )
     preview_material_mode: bpy.props.EnumProperty(
         name="Режим материалов Varwin",

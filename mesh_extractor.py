@@ -745,6 +745,21 @@ def extract_convex_hull_geometry(mesh_objs, root_obj=None, max_verts=64):
     return generate_box_mesh_data(cx, cy, cz, 0.5, 0.5, 0.5)
 
 
+def is_preview_rig_object(obj):
+    """Checks whether an object is part of the temporary Varwin preview rig."""
+    if not obj:
+        return False
+    if obj.get('varwin_preview_rig', False):
+        return True
+    name_lower = obj.name.lower()
+    if name_lower.startswith(('varwin_preview_', 'varwin_render_preview_')):
+        return True
+    for col in getattr(obj, 'users_collection', []):
+        if 'Varwin_Render_Preview_Rig' in col.name:
+            return True
+    return False
+
+
 def is_collider_object(obj):
     """
     Checks whether an object is designated as a collision helper (level design box collider).
@@ -752,6 +767,8 @@ def is_collider_object(obj):
     """
     if not obj or obj.type != 'MESH':
         return False
+    if is_preview_rig_object(obj):
+        return True
     if obj.get('varwin_collider', False) or obj.get('is_collider', False):
         return True
     name_lower = obj.name.lower()
@@ -775,12 +792,12 @@ def get_scene_collider_objects(scene=None):
     for col in bpy.data.collections:
         if 'collider' in col.name.lower():
             for obj in col.objects:
-                if obj.type == 'MESH' and obj not in colliders:
+                if obj.type == 'MESH' and obj not in colliders and not is_preview_rig_object(obj):
                     colliders.append(obj)
 
     # 2. Also check any scene objects matching naming conventions
     for obj in scene.objects:
-        if obj.type == 'MESH' and obj not in colliders and is_collider_object(obj):
+        if obj.type == 'MESH' and obj not in colliders and is_collider_object(obj) and not is_preview_rig_object(obj):
             colliders.append(obj)
 
     return colliders
