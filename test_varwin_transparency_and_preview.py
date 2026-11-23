@@ -207,4 +207,69 @@ assert res_off == {'FINISHED'}, f'Operator toggle off failed with {res_off}'
 assert scene.varwin_scene.render_preview_active == False, 'Preview should be inactive'
 print('  ✓ Varwin Render Preview deactivated cleanly!')
 
-print('\n=== ALL 4 TEST SUITES PASSED WITH 100% SUCCESS! ===')
+# ---------------------------------------------------------
+# TEST 5: Varwin Standard Material Display Mode & Operations
+# ---------------------------------------------------------
+print('\n[TEST 5] Testing Varwin Standard Material Enforcement & Preview...')
+scene = bpy.context.scene
+
+# 5a. Create a mesh without material and a high-metallic material
+bpy.ops.mesh.primitive_cube_add(location=(5, 5, 5))
+unmat_cube = bpy.context.active_object
+unmat_cube.name = "UnmatCube"
+unmat_cube.data.materials.clear()
+
+mat_metal = bpy.data.materials.new("SuperMetallic")
+mat_metal.use_nodes = True
+bsdf_metal = mat_metal.node_tree.nodes.get('Principled BSDF')
+bsdf_metal.inputs['Metallic'].default_value = 1.0
+
+# Activate Varwin Render Preview
+res = bpy.ops.varwin.toggle_render_preview()
+assert res == {'FINISHED'}
+assert scene.varwin_scene.render_preview_active == True
+
+# Check View Transform is set to Standard (Unity sRGB parity)
+assert scene.view_settings.view_transform == 'Standard', f"Expected Standard view transform, got {scene.view_settings.view_transform}"
+print("  ✓ Color Management view_transform set to Standard (Unity sRGB)")
+
+# Check Metallic was clamped to <= 0.80
+assert abs(bsdf_metal.inputs['Metallic'].default_value - 0.80) < 0.001, f"Expected Metallic <= 0.80, got {bsdf_metal.inputs['Metallic'].default_value}"
+print("  ✓ Metallic automatically clamped to 0.80 in Varwin preview mode")
+
+# Check unassigned mesh received Varwin_Default_Standard_MAT
+assert len(unmat_cube.data.materials) > 0, "UnmatCube should have received a default material"
+assert unmat_cube.data.materials[0].name == "Varwin_Default_Standard_MAT"
+print("  ✓ Untextured mesh received Varwin_Default_Standard_MAT")
+
+# 5b. Test preview_material_mode switching
+scene.varwin_scene.preview_material_mode = 'DEFAULT_CLAY'
+assert bpy.context.view_layer.material_override is not None
+assert bpy.context.view_layer.material_override.name == "Varwin_Default_Standard_MAT"
+print("  ✓ preview_material_mode = 'DEFAULT_CLAY' activates material_override")
+
+scene.varwin_scene.preview_material_mode = 'STANDARD_PBR'
+assert bpy.context.view_layer.material_override is None
+print("  ✓ preview_material_mode = 'STANDARD_PBR' clears material_override")
+
+# 5c. Test varwin.new_standard_material operator
+res_new_mat = bpy.ops.varwin.new_standard_material(material_name="CustomVarwinMat")
+assert res_new_mat == {'FINISHED'}
+new_mat = bpy.data.materials.get("CustomVarwinMat")
+assert new_mat is not None
+assert new_mat.get("varwin_standard_shader") == "Varwin/Standard"
+print("  ✓ varwin.new_standard_material created new Varwin/Standard material")
+
+# 5d. Test varwin.convert_to_standard_material operator
+res_conv = bpy.ops.varwin.convert_to_standard_material()
+assert res_conv == {'FINISHED'}
+print("  ✓ varwin.convert_to_standard_material ran successfully")
+
+# 5e. Toggle preview OFF
+res_off = bpy.ops.varwin.toggle_render_preview()
+assert res_off == {'FINISHED'}
+assert scene.varwin_scene.render_preview_active == False
+assert bpy.context.view_layer.material_override is None
+print("  ✓ Varwin Render Preview deactivated and restored original settings cleanly")
+
+print('\n=== ALL 5 TEST SUITES PASSED WITH 100% SUCCESS! ===')

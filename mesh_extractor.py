@@ -245,7 +245,7 @@ def extract_material_properties(mat):
                                 alpha = max(0.1, 1.0 - transmission * 0.85)
 
                 if 'Metallic' in node.inputs:
-                    metallic = float(node.inputs['Metallic'].default_value)
+                    metallic = min(float(node.inputs['Metallic'].default_value), 0.80)
                 if 'Roughness' in node.inputs:
                     roughness = float(node.inputs['Roughness'].default_value)
                 if 'Emission Color' in node.inputs or 'Emission' in node.inputs:

@@ -185,6 +185,10 @@ def draw_varwin_object_ui(layout, context, obj, props):
     box_mat_opt.prop(props, "embed_textures")
     box_mat_opt.prop(props, "preserve_materials")
 
+    row_v_mat = box_mat_opt.row(align=True)
+    row_v_mat.operator("varwin.convert_to_standard_material", text="Привести к Varwin Standard", icon='FILE_REFRESH')
+    row_v_mat.operator("varwin.new_standard_material", text="+ Новый", icon='ADD')
+
     # Procedural to file texture baking (Vad / BIOS request)
     box_bake = box_mat_opt.box()
     box_bake.label(text="Сделать текстуру файлом (Bake PBR):", icon='RENDER_STILL')
@@ -1713,6 +1717,159 @@ class VARWIN_OT_toggle_colliders_visibility(bpy.types.Operator):
 _saved_viewport_states = {}
 
 
+def get_or_create_varwin_default_material():
+    """Returns or creates the official Varwin Constructor default material (Constructor_Def_MAT)."""
+    mat_name = "Varwin_Default_Standard_MAT"
+    mat = bpy.data.materials.get(mat_name)
+    if not mat:
+        mat = bpy.data.materials.new(mat_name)
+        if not mat.node_tree:
+            try:
+                mat.use_nodes = True
+            except Exception:
+                pass
+        bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+        if bsdf:
+            # Varwin Constructor_Def_MAT default: light gray (0.8, 0.8, 0.8), smoothness 0.5, metallic 0.0
+            bsdf.inputs['Base Color'].default_value = (0.8, 0.8, 0.8, 1.0)
+            bsdf.inputs['Roughness'].default_value = 0.5
+            bsdf.inputs['Metallic'].default_value = 0.0
+        mat["varwin_standard_shader"] = "Varwin/Standard"
+        mat["varwin_default_constructor"] = True
+    return mat
+
+
+def ensure_varwin_standard_material(mat, clamp_metallic=True, auto_alpha=True):
+    """
+    Ensures a Blender material conforms to the Varwin/Standard Unity shader specification:
+    - Principled BSDF node tree setup.
+    - Metallic clamped to <= 0.80 to prevent black reflection voids in Unity Varwin.
+    - Correct viewport blend_method ('BLEND') for materials with transparency or transmission.
+    - Tags material with Varwin/Standard shader metadata.
+    """
+    if not mat:
+        return False
+
+    changed = False
+
+    # Ensure node tree
+    if not mat.node_tree:
+        try:
+            mat.use_nodes = True
+            changed = True
+        except Exception:
+            pass
+
+    if not mat.node_tree:
+        return False
+
+    nodes = mat.node_tree.nodes
+    links = mat.node_tree.links
+
+    bsdf = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    out_node = next((n for n in nodes if n.type == 'OUTPUT_MATERIAL'), None)
+
+    if not out_node:
+        out_node = nodes.new('ShaderNodeOutputMaterial')
+        out_node.location = (300, 0)
+        changed = True
+
+    if not bsdf:
+        bsdf = nodes.new('ShaderNodeBsdfPrincipled')
+        bsdf.location = (out_node.location.x - 300, out_node.location.y)
+        links.new(bsdf.outputs['BSDF'], out_node.inputs['Surface'])
+        changed = True
+    else:
+        surf_input = out_node.inputs.get('Surface')
+        if surf_input and not surf_input.is_linked:
+            links.new(bsdf.outputs['BSDF'], surf_input)
+            changed = True
+
+    # Clamp Metallic to 0.80 if enabled
+    if clamp_metallic and bsdf:
+        met_in = bsdf.inputs.get('Metallic')
+        if met_in and not met_in.is_linked:
+            if float(met_in.default_value) > 0.80:
+                met_in.default_value = 0.80
+                changed = True
+
+    # Check and enforce Transparency / Alpha blend mode
+    if auto_alpha:
+        is_transp = False
+        if bsdf:
+            alpha_in = bsdf.inputs.get('Alpha')
+            if alpha_in:
+                if alpha_in.is_linked:
+                    is_transp = True
+                elif float(alpha_in.default_value) < 0.999:
+                    is_transp = True
+
+            trans_in = bsdf.inputs.get('Transmission Weight', bsdf.inputs.get('Transmission'))
+            if trans_in:
+                if trans_in.is_linked:
+                    is_transp = True
+                elif float(trans_in.default_value) > 0.01:
+                    is_transp = True
+
+        for n in nodes:
+            if n.type in ('BSDF_TRANSPARENT', 'BSDF_GLASS'):
+                is_transp = True
+                break
+
+        if len(mat.diffuse_color) > 3 and mat.diffuse_color[3] < 0.999:
+            is_transp = True
+
+        if is_transp:
+            if hasattr(mat, 'blend_method') and mat.blend_method != 'BLEND':
+                mat.blend_method = 'BLEND'
+                changed = True
+            if hasattr(mat, 'show_transparent_back') and not mat.show_transparent_back:
+                mat.show_transparent_back = True
+                changed = True
+
+    mat["varwin_standard_shader"] = "Varwin/Standard"
+    mat["varwin_standard_verified"] = True
+    return changed
+
+
+def apply_varwin_standard_materials(context, clamp_metallic=True, assign_missing=True):
+    """
+    Enforces Varwin Standard Material display across the scene:
+    1. Formats all materials according to Varwin/Standard shader rules (Principled BSDF, metallic <= 0.8, alpha blend).
+    2. Assigns Varwin Default Standard Material to any mesh object that has no materials.
+    3. Handles View Layer material override if 'DEFAULT_CLAY' mode is active.
+    """
+    scene = getattr(context, "scene", None) or bpy.context.scene
+    vws = getattr(scene, "varwin_scene", None)
+
+    # 1. Format all existing materials
+    for mat in bpy.data.materials:
+        if not mat or mat.name == "Varwin_Default_Standard_MAT":
+            continue
+        ensure_varwin_standard_material(mat, clamp_metallic=clamp_metallic, auto_alpha=True)
+
+    # 2. Check all mesh objects in scene for missing materials
+    if assign_missing:
+        def_mat = get_or_create_varwin_default_material()
+        for obj in scene.objects:
+            if obj.type == 'MESH':
+                if obj.name.startswith("Col_") or obj.name.startswith("Collider_") or "varwin_collider" in obj:
+                    continue
+                if len(obj.data.materials) == 0:
+                    obj.data.materials.append(def_mat)
+                elif obj.data.materials[0] is None:
+                    obj.data.materials[0] = def_mat
+
+    # 3. Handle preview_material_mode
+    if vws and getattr(vws, "render_preview_active", False):
+        vl = getattr(context, "view_layer", None) or getattr(scene, "view_layers", {}).get("ViewLayer")
+        if vl:
+            if getattr(vws, "preview_material_mode", 'STANDARD_PBR') == 'DEFAULT_CLAY':
+                vl.material_override = get_or_create_varwin_default_material()
+            else:
+                vl.material_override = None
+
+
 class VARWIN_OT_toggle_render_preview(bpy.types.Operator):
     """Включить/выключить режим предпросмотра рендера Varwin (шейдинг PBR, освещение и корректная прозрачность)"""
     bl_idname = "varwin.toggle_render_preview"
@@ -1737,6 +1894,21 @@ class VARWIN_OT_toggle_render_preview(bpy.types.Operator):
             'INDOOR': 'interior.exr',
         }
         target_light = preset_lights.get(vws.preview_lighting_preset, 'studio.exr')
+
+        # Color Management: Set Standard (Unity sRGB) in Varwin preview mode
+        if new_state:
+            if 'view_transform' not in _saved_viewport_states:
+                _saved_viewport_states['view_transform'] = getattr(scene.view_settings, 'view_transform', 'AgX')
+            try:
+                scene.view_settings.view_transform = 'Standard'
+            except Exception:
+                pass
+        else:
+            if 'view_transform' in _saved_viewport_states:
+                try:
+                    scene.view_settings.view_transform = _saved_viewport_states.pop('view_transform', 'AgX')
+                except Exception:
+                    pass
 
         # Apply to all 3D viewports in window manager
         wm = context.window_manager
@@ -1793,40 +1965,80 @@ class VARWIN_OT_toggle_render_preview(bpy.types.Operator):
                                     sh.use_scene_world = bool(saved['use_scene_world'])
                     area.tag_redraw()
 
-        # If activating and auto-alpha is enabled, ensure materials with transparency have blend_method set properly
-        if new_state and vws.preview_auto_alpha:
-            for mat in bpy.data.materials:
-                if not mat:
-                    continue
-                is_transp = False
-                if mat.use_nodes and mat.node_tree:
-                    for node in mat.node_tree.nodes:
-                        if node.type == 'BSDF_PRINCIPLED':
-                            alpha_in = node.inputs.get('Alpha')
-                            if alpha_in:
-                                if alpha_in.is_linked:
-                                    is_transp = True
-                                elif float(alpha_in.default_value) < 0.999:
-                                    is_transp = True
-                            trans_in = node.inputs.get('Transmission Weight', node.inputs.get('Transmission'))
-                            if trans_in:
-                                if trans_in.is_linked:
-                                    is_transp = True
-                                elif float(trans_in.default_value) > 0.01:
-                                    is_transp = True
-                        elif node.type in ('BSDF_TRANSPARENT', 'BSDF_GLASS'):
-                            is_transp = True
-                if len(mat.diffuse_color) > 3 and mat.diffuse_color[3] < 0.999:
-                    is_transp = True
-
-                if is_transp:
-                    if hasattr(mat, 'blend_method') and mat.blend_method != 'BLEND':
-                        mat.blend_method = 'BLEND'
-                    if hasattr(mat, 'show_transparent_back'):
-                        mat.show_transparent_back = True
+        if new_state:
+            # Enforce Varwin Standard Materials across all scene objects
+            apply_varwin_standard_materials(
+                context,
+                clamp_metallic=getattr(vws, "preview_clamp_metallic", True),
+                assign_missing=True
+            )
+        else:
+            # Clear any material override on view layer
+            vl = getattr(context, "view_layer", None)
+            if vl and vl.material_override:
+                vl.material_override = None
 
         status_text = "включен" if new_state else "выключен"
-        self.report({'INFO'}, f"Предпросмотр рендера Varwin {status_text}")
+        self.report({'INFO'}, f"Предпросмотр рендера Varwin {status_text} (режим Varwin Standard Material)")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_convert_to_standard_material(bpy.types.Operator):
+    """Привести все материалы сцены к спецификации Varwin/Standard PBR (Unity Standard Shader)"""
+    bl_idname = "varwin.convert_to_standard_material"
+    bl_label = "Привести все к Varwin Standard"
+    bl_description = "Форматирует материалы сцены под шейдер Varwin/Standard (Principled BSDF, металличность <= 0.8, корректный альфа-блендинг)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    clamp_metallic: bpy.props.BoolProperty(
+        name="Ограничить Metallic (<= 0.8)",
+        default=True,
+        description="Ограничить металличность 0.80 во избежание черных артефактов в Unity/Varwin"
+    )
+    assign_missing: bpy.props.BoolProperty(
+        name="Назначить базовый материал",
+        default=True,
+        description="Присвоить Varwin Default Standard Material всем мешам без материалов"
+    )
+
+    def execute(self, context):
+        apply_varwin_standard_materials(context, clamp_metallic=self.clamp_metallic, assign_missing=self.assign_missing)
+        count = len(bpy.data.materials)
+        self.report({'INFO'}, f"Материалы приведены к Varwin Standard (всего {count} мат.)")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_new_standard_material(bpy.types.Operator):
+    """Создать новый материал Varwin Standard (Unity Standard Shader) и назначить активному объекту"""
+    bl_idname = "varwin.new_standard_material"
+    bl_label = "+ Новый Varwin Standard"
+    bl_description = "Создает новый PBR-материал, полностью оптимизированный для шейдера Varwin/Standard"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    material_name: bpy.props.StringProperty(
+        name="Имя материала",
+        default="Varwin_Standard_MAT"
+    )
+
+    def execute(self, context):
+        name = self.material_name or "Varwin_Standard_MAT"
+        mat = bpy.data.materials.new(name)
+        if not mat.node_tree:
+            try:
+                mat.use_nodes = True
+            except Exception:
+                pass
+        ensure_varwin_standard_material(mat, clamp_metallic=True, auto_alpha=True)
+
+        act = context.active_object
+        if act and act.type == 'MESH':
+            if len(act.data.materials) == 0:
+                act.data.materials.append(mat)
+            else:
+                act.data.materials[act.active_material_index] = mat
+            self.report({'INFO'}, f"Создан и назначен материал '{mat.name}' для '{act.name}'")
+        else:
+            self.report({'INFO'}, f"Создан новый материал '{mat.name}'")
         return {'FINISHED'}
 
 
@@ -1850,9 +2062,26 @@ def draw_varwin_shading_popover(self, context):
         sub.operator("varwin.toggle_render_preview", text="Предпросмотр в рендере Varwin", icon='CHECKBOX_DEHLT')
 
     if vws.render_preview_active:
+        box.separator()
         box.prop(vws, "preview_lighting_preset", text="Окружение")
+
+        # Material section: Varwin Standard Material
+        box_mat = box.box()
+        row_mat = box_mat.row(align=True)
+        row_mat.label(text="Материалы: Varwin Standard", icon='MATERIAL')
+
+        box_mat.prop(vws, "preview_material_mode", text="Режим")
+
+        row_btns = box_mat.row(align=True)
+        row_btns.operator("varwin.convert_to_standard_material", text="Привести все к Varwin", icon='FILE_REFRESH')
+        row_btns.operator("varwin.new_standard_material", text="+ Новый", icon='ADD')
+
         row_opt = box.row(align=True)
-        row_opt.prop(vws, "preview_auto_alpha", text="Прозрачность (Alpha)")
+        row_opt.prop(vws, "preview_auto_alpha", text="Авто-прозрачность (Alpha)")
+        row_opt.prop(vws, "preview_clamp_metallic", text="Metallic <= 0.8")
+
+        row_cm = box.row(align=True)
+        row_cm.label(text="Цвет: Unity Standard sRGB", icon='RESTRICT_COLOR_OFF')
 
 
 def draw_varwin_header_shading(self, context):
@@ -1865,7 +2094,8 @@ def draw_varwin_header_shading(self, context):
 
     row = layout.row(align=True)
     if vws.render_preview_active:
-        row.operator("varwin.toggle_render_preview", text="Varwin", icon='SHADING_RENDERED', depress=True)
+        mode_label = "Varwin Standard" if getattr(vws, 'preview_material_mode', 'STANDARD_PBR') == 'STANDARD_PBR' else "Varwin Clay"
+        row.operator("varwin.toggle_render_preview", text=mode_label, icon='SHADING_RENDERED', depress=True)
     else:
         row.operator("varwin.toggle_render_preview", text="", icon='SHADING_RENDERED')
 
@@ -1912,6 +2142,8 @@ classes = (
     VARWIN_OT_detect_and_disable_internal_meshes,
     VARWIN_OT_enable_all_auto_collisions,
     VARWIN_OT_toggle_render_preview,
+    VARWIN_OT_convert_to_standard_material,
+    VARWIN_OT_new_standard_material,
     OBJECT_PT_varwin_object,
     SCENE_PT_varwin_scene,
     PROPERTIES_PT_varwin_main,

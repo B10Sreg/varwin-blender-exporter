@@ -555,6 +555,26 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
                                 pass
                     area.tag_redraw()
 
+    def update_preview_material_mode(self, context):
+        if not getattr(self, "render_preview_active", False):
+            return
+        vl = getattr(context, "view_layer", None)
+        if not vl and hasattr(bpy.context, "view_layer"):
+            vl = bpy.context.view_layer
+        if vl:
+            if self.preview_material_mode == 'DEFAULT_CLAY':
+                from .ui import get_or_create_varwin_default_material
+                vl.material_override = get_or_create_varwin_default_material()
+            else:
+                vl.material_override = None
+
+    def update_preview_clamp_metallic(self, context):
+        if not getattr(self, "render_preview_active", False):
+            return
+        if self.preview_clamp_metallic:
+            from .ui import apply_varwin_standard_materials
+            apply_varwin_standard_materials(context, clamp_metallic=True, assign_missing=False)
+
     render_preview_active: bpy.props.BoolProperty(
         name="Предпросмотр рендера Varwin",
         default=False,
@@ -570,6 +590,22 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         default="STUDIO",
         update=update_preview_preset,
         description="Пресет окружения и освещения для предпросмотра рендера Varwin"
+    )
+    preview_material_mode: bpy.props.EnumProperty(
+        name="Режим материалов Varwin",
+        items=[
+            ("STANDARD_PBR", "Varwin Standard (PBR)", "Все материалы отображаются в стандарте Varwin/Standard PBR (текстуры, металличность <= 0.8, плавность, альфа-блендинг)", "SHADING_TEXTURE", 0),
+            ("DEFAULT_CLAY", "Varwin Default (Constructor_Def_MAT)", "Отображение всех объектов в базовом сером материале Varwin (Constructor_Def_MAT)", "MATERIAL", 1),
+        ],
+        default="STANDARD_PBR",
+        update=update_preview_material_mode,
+        description="Режим отображения материалов в рендере Varwin"
+    )
+    preview_clamp_metallic: bpy.props.BoolProperty(
+        name="Metallic <= 0.8",
+        default=True,
+        update=update_preview_clamp_metallic,
+        description="Ограничивать металличность значением 0.80 для полного соответствия шейдеру Varwin/Standard (предотвращает черные артефакты отражений в Unity)"
     )
     preview_auto_alpha: bpy.props.BoolProperty(
         name="Авто-прозрачность в Viewport",

@@ -61,8 +61,13 @@
   - Поддержка `BSDF_TRANSPARENT` и `BSDF_GLASS`.
   - Автоматическое определение альфа-канала текстур (RGBA).
   - Корректная настройка Unity Standard Shader: `_Mode = 3.0` (Transparent) или `1.0` (Cutout), `_SrcBlend = 1.0`, `_DstBlend = 10.0`, `_ZWrite = 0.0`, очередь отрисовки `RenderQueue = 3000`, теги `RenderType = Transparent`, ключевое слово `_ALPHAPREMULTIPLY_ON`. Прозрачные объекты больше не отображаются сплошным белым цветом!
-- **Режим предпросмотра рендера Varwin (3D Viewport):**
+- **Режим предпросмотра рендера Varwin и Varwin Standard Material (3D Viewport):**
   - Интеграция прямо в меню **Viewport Shading** и шапку 3D Viewport для мгновенной симуляции вида модели в Unity-рантайме Varwin.
+  - **Varwin Standard Material:** все материалы сцены приводятся к спецификации шейдера `Varwin/Standard` (Principled BSDF, металличность $\le 0.80$, корректный альфа-блендинг `BLEND`, базовая гладкость).
+  - **Автоматический базовый материал:** любые меши без материалов автоматически получают стандартный конструкторский серый материал Varwin (`Constructor_Def_MAT`).
+  - **Точная цветопередача Unity:** автоматическое переключение управления цветом сцены (`view_transform = 'Standard'`) для 100% соответствия sRGB гамме Unity вместо блеклой кривой AgX.
+  - **Переключатель режимов материалов:** `Varwin Standard (PBR)` для проверки текстур и шейдинга или `Varwin Default (Серый Constructor_Def_MAT)` через Material Override во вьюпорте.
+  - **Быстрые операторы:** «Привести все к Varwin Standard» (`varwin.convert_to_standard_material`) и «+ Новый Varwin Standard» (`varwin.new_standard_material`).
   - Пресеты окружения: «Студия (Varwin)», «Улица / День», «Интерьер».
   - Автоматическая настройка альфа-блендинга (`mat.blend_method = 'BLEND'`) во вьюпорте.
 - **Оптимизация коллизий Level Design:**
