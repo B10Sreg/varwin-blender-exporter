@@ -21,7 +21,7 @@ if addon_name not in bpy.context.preferences.addons:
     bpy.ops.preferences.addon_enable(module=addon_name)
 print('Addon enabled successfully!')
 
-from varwin_vwo_exporter import mesh_extractor, vwo_builder, ui, properties
+from varwin_vwo_exporter import mesh_extractor, vwo_builder, ui, properties, varwin_preview
 
 # ---------------------------------------------------------
 # TEST 1: Material Extraction
@@ -175,54 +175,74 @@ print('  ✓ TEST 3 PASSED: VWT scene materials preserve transparency and Unity 
 # ---------------------------------------------------------
 # TEST 4: Varwin Render Preview Operator & UI
 # ---------------------------------------------------------
-print('\n[TEST 4] Testing Varwin Render Preview...')
+print('\n[TEST 4] Testing Varwin 1:1 Render Preview...')
 assert hasattr(bpy.types, 'VIEW3D_PT_shading'), 'VIEW3D_PT_shading missing'
 assert hasattr(bpy.types, 'VIEW3D_HT_header'), 'VIEW3D_HT_header missing'
 
+bpy.ops.wm.read_homefile(use_empty=True)
 scene = bpy.context.scene
 scene.varwin_scene.render_preview_active = False
 assert not scene.varwin_scene.render_preview_active
 
-# Add a transparent material to test auto_alpha
+# Attach transparent material to a scene mesh so non-destructive proxy is compiled
+bpy.ops.mesh.primitive_cube_add(location=(0, 0, 1))
+alpha_obj = bpy.context.active_object
+alpha_obj.name = 'AlphaProxyCube'
 test_transp_mat = bpy.data.materials.new('TestAutoAlpha')
-test_transp_mat.use_nodes = True
+if not test_transp_mat.node_tree:
+    test_transp_mat.use_nodes = True
 test_transp_mat.node_tree.nodes.get('Principled BSDF').inputs['Alpha'].default_value = 0.5
 test_transp_mat.blend_method = 'HASHED'
+alpha_obj.data.materials.append(test_transp_mat)
 
 res = bpy.ops.varwin.toggle_render_preview()
 assert res == {'FINISHED'}, f'Operator failed with {res}'
 assert scene.varwin_scene.render_preview_active == True, 'Preview should be active'
-assert test_transp_mat.blend_method == 'BLEND', f'Expected blend_method=BLEND, got {test_transp_mat.blend_method}'
-print('  ✓ Varwin Render Preview activated, transparent material blend_method set to BLEND!')
+
+active_mat = alpha_obj.data.materials[0]
+assert active_mat is not None and active_mat.get('varwin_preview_proxy') == True, 'Expected non-destructive proxy material on mesh'
+assert active_mat.blend_method == 'BLEND', f'Expected proxy blend_method=BLEND, got {active_mat.blend_method}'
+assert active_mat.use_backface_culling == True, 'Expected Cull Back (use_backface_culling=True) on proxy'
+print('  ✓ Varwin 1:1 Render Preview activated with non-destructive BLEND + Cull Back proxy!')
 
 # Test Preset update
 scene.varwin_scene.preview_lighting_preset = 'OUTDOOR'
 print('  ✓ Switched preset to OUTDOOR')
 scene.varwin_scene.preview_lighting_preset = 'INDOOR'
 print('  ✓ Switched preset to INDOOR')
+scene.varwin_scene.preview_lighting_preset = 'UNITY_SKYBOX'
+print('  ✓ Switched preset to UNITY_SKYBOX')
 
-# Test Operator toggle OFF
+# Test Operator toggle OFF & verify original material untouched
 res_off = bpy.ops.varwin.toggle_render_preview()
 assert res_off == {'FINISHED'}, f'Operator toggle off failed with {res_off}'
 assert scene.varwin_scene.render_preview_active == False, 'Preview should be inactive'
-print('  ✓ Varwin Render Preview deactivated cleanly!')
+assert alpha_obj.data.materials[0] == test_transp_mat, 'Original material should be restored'
+assert test_transp_mat.blend_method == 'HASHED', 'Original material blend_method must remain untouched!'
+assert bpy.data.materials.get('__VarwinPreview__TestAutoAlpha') is None, 'Temporary proxy should be deleted'
+print('  ✓ Varwin Render Preview deactivated cleanly and restored original material untouched!')
 
 # ---------------------------------------------------------
 # TEST 5: Varwin Standard Material Display Mode & Operations
 # ---------------------------------------------------------
-print('\n[TEST 5] Testing Varwin Standard Material Enforcement & Preview...')
+print('\n[TEST 5] Testing Varwin Standard Material Enforcement & Non-Destructive Preview...')
 scene = bpy.context.scene
 
-# 5a. Create a mesh without material and a high-metallic material
+# 5a. Create a mesh without material and a mesh with high-metallic material
 bpy.ops.mesh.primitive_cube_add(location=(5, 5, 5))
 unmat_cube = bpy.context.active_object
 unmat_cube.name = "UnmatCube"
 unmat_cube.data.materials.clear()
 
+bpy.ops.mesh.primitive_cube_add(location=(2, 2, 2))
+metal_cube = bpy.context.active_object
+metal_cube.name = "MetalCube"
 mat_metal = bpy.data.materials.new("SuperMetallic")
-mat_metal.use_nodes = True
+if not mat_metal.node_tree:
+    mat_metal.use_nodes = True
 bsdf_metal = mat_metal.node_tree.nodes.get('Principled BSDF')
 bsdf_metal.inputs['Metallic'].default_value = 1.0
+metal_cube.data.materials.append(mat_metal)
 
 # Activate Varwin Render Preview
 res = bpy.ops.varwin.toggle_render_preview()
@@ -233,14 +253,19 @@ assert scene.varwin_scene.render_preview_active == True
 assert scene.view_settings.view_transform == 'Standard', f"Expected Standard view transform, got {scene.view_settings.view_transform}"
 print("  ✓ Color Management view_transform set to Standard (Unity sRGB)")
 
-# Check Metallic was clamped to <= 0.80
-assert abs(bsdf_metal.inputs['Metallic'].default_value - 0.80) < 0.001, f"Expected Metallic <= 0.80, got {bsdf_metal.inputs['Metallic'].default_value}"
-print("  ✓ Metallic automatically clamped to 0.80 in Varwin preview mode")
+# Check Metallic was clamped to <= 0.80 on proxy while original remains 1.0
+metal_proxy = metal_cube.data.materials[0]
+assert metal_proxy.get('varwin_preview_proxy') == True
+proxy_bsdf = next(n for n in metal_proxy.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
+assert abs(proxy_bsdf.inputs['Metallic'].default_value - 0.80) < 0.001, f"Expected proxy Metallic <= 0.80, got {proxy_bsdf.inputs['Metallic'].default_value}"
+assert abs(bsdf_metal.inputs['Metallic'].default_value - 1.0) < 0.001, "Original Metallic must remain untouched (1.0)!"
+assert metal_proxy.use_backface_culling == True
+print("  ✓ Proxy Metallic clamped to 0.80 & Cull Back enabled non-destructively (original preserved at 1.0)")
 
-# Check unassigned mesh received Varwin_Default_Standard_MAT
+# Check unassigned mesh received Varwin_Default_Standard_MAT during preview
 assert len(unmat_cube.data.materials) > 0, "UnmatCube should have received a default material"
 assert unmat_cube.data.materials[0].name == "Varwin_Default_Standard_MAT"
-print("  ✓ Untextured mesh received Varwin_Default_Standard_MAT")
+print("  ✓ Untextured mesh received Varwin_Default_Standard_MAT during preview")
 
 # 5b. Test preview_material_mode switching
 scene.varwin_scene.preview_material_mode = 'DEFAULT_CLAY'
@@ -265,28 +290,33 @@ res_conv = bpy.ops.varwin.convert_to_standard_material()
 assert res_conv == {'FINISHED'}
 print("  ✓ varwin.convert_to_standard_material ran successfully")
 
-# 5e. Toggle preview OFF
+# 5e. Toggle preview OFF and verify UnmatCube & MetalCube restore
 res_off = bpy.ops.varwin.toggle_render_preview()
 assert res_off == {'FINISHED'}
 assert scene.varwin_scene.render_preview_active == False
 assert bpy.context.view_layer.material_override is None
-print("  ✓ Varwin Render Preview deactivated and restored original settings cleanly")
+assert len(unmat_cube.data.materials) == 0, "UnmatCube should restore empty material slots"
+assert metal_cube.data.materials[0] == mat_metal
+print("  ✓ Varwin Render Preview deactivated and restored original slots cleanly")
 
 # ---------------------------------------------------------
-# TEST 6: 100% Unity Varwin Render Rig (Sun, Shadows, Floor, EEVEE)
+# TEST 6: 100% Unity Varwin Render Rig (Sun, Shadows, EEVEE Floor, LightPath)
 # ---------------------------------------------------------
-print('\n[TEST 6] Testing 100% Unity Varwin Render Rig (Sun, Dynamic Soft Shadows, Floor, Ambient)...')
+print('\n[TEST 6] Testing 100% Unity Varwin Render Rig (Sun angle, EEVEE Shadow Floor, Unity Forward)...')
 scene = bpy.context.scene
 
 # 6a. Activate Varwin Render Preview in FULL_UNITY mode
 scene.varwin_scene.preview_render_mode = 'FULL_UNITY'
+scene.varwin_scene.preview_use_ssao = False
 res_rig = bpy.ops.varwin.toggle_render_preview()
 assert res_rig == {'FINISHED'}
 assert scene.varwin_scene.render_preview_active == True
 
-# Check Render Engine is EEVEE
-assert scene.render.engine == 'BLENDER_EEVEE', f"Expected BLENDER_EEVEE, got {scene.render.engine}"
-print("  ✓ Render Engine switched to BLENDER_EEVEE for real-time shadows and PBR")
+# Check Render Engine is EEVEE and raytracing is OFF (Unity Forward RP parity)
+assert 'EEVEE' in scene.render.engine, f"Expected EEVEE engine, got {scene.render.engine}"
+if hasattr(scene.eevee, 'use_raytracing'):
+    assert scene.eevee.use_raytracing == False, "EEVEE raytracing should be OFF for Unity Forward parity"
+print("  ✓ Render Engine switched to EEVEE (Unity Forward mode, no Cycles-style raytrace noise)")
 
 # Check Rig Collection exists
 rig_col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
@@ -299,19 +329,26 @@ assert sun is not None, "Varwin_Preview_Sun not found in rig!"
 assert sun.data.type == 'SUN', f"Expected SUN light, got {sun.data.type}"
 assert sun.data.energy == scene.varwin_scene.preview_sun_intensity
 assert sun.get("varwin_preview_rig") == True
-print(f"  ✓ Varwin Directional Sun created (energy={sun.data.energy}, soft_shadows=0.15)")
+print(f"  ✓ Varwin Directional Sun created (energy={sun.data.energy}, angle={sun.data.angle:.4f} rad)")
 
-# Check Varwin Shadow Catcher Ground Floor
+# Check EEVEE Transparent Shadow Catcher Ground Floor
 floor = rig_col.objects.get("Varwin_Preview_Floor")
 assert floor is not None, "Varwin_Preview_Floor not found in rig!"
-assert getattr(floor, "is_shadow_catcher", False) == True, "Floor must be a shadow catcher"
 assert floor.get("varwin_preview_rig") == True
-print(f"  ✓ Varwin Shadow Catcher Floor created (is_shadow_catcher=True, location.z={floor.location.z:.2f})")
+assert len(floor.data.materials) > 0 and floor.data.materials[0].name == "Varwin_Preview_Floor_MAT"
+floor_mat_nodes = [n.type for n in floor.data.materials[0].node_tree.nodes]
+assert 'SHADERTORGB' in floor_mat_nodes, f"EEVEE floor must use ShaderNodeShaderToRGB, got {floor_mat_nodes}"
+if hasattr(floor, 'visible_shadow'):
+    assert floor.visible_shadow == False, "Floor should not cast shadow onto itself"
+print(f"  ✓ EEVEE Transparent Shadow Catcher Floor created (location.z={floor.location.z:.3f})")
 
-# 6b. Test dynamic parameter updates
+# 6b. Test dynamic parameter updates including real Sun angle
 scene.varwin_scene.preview_sun_intensity = 3.5
 assert sun.data.energy == 3.5, "Sun intensity did not update dynamically!"
-print("  ✓ Sun intensity dynamically updated to 3.5")
+angle_before = sun.data.angle
+scene.varwin_scene.preview_shadow_softness = 0.65
+assert sun.data.angle > angle_before, f"Sun angle should increase with softness: {angle_before} -> {sun.data.angle}"
+print("  ✓ Sun intensity & angular shadow softness updated dynamically")
 
 scene.varwin_scene.preview_show_floor = False
 assert floor.hide_viewport == True, "Floor visibility did not update!"
@@ -335,4 +372,97 @@ assert bpy.data.objects.get("Varwin_Preview_Sun") is None, "Sun object should be
 assert bpy.data.objects.get("Varwin_Preview_Floor") is None, "Floor object should be deleted!"
 print("  ✓ Varwin Render Rig cleaned up with 0 scene pollution!")
 
-print('\n=== ALL 6 TEST SUITES PASSED WITH 100% SUCCESS! ===')
+# ---------------------------------------------------------
+# TEST 7: 1:1 WYSIWYG Parity Diagnostics, LightPath World, Colliders & Export Safety
+# ---------------------------------------------------------
+print('\n[TEST 7] Testing 1:1 WYSIWYG Parity, Diagnostics, Colliders & Export While Preview Active...')
+bpy.ops.wm.read_homefile(use_empty=True)
+scene = bpy.context.scene
+
+# 7a. Create procedural unbaked material + glass material + collider
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0, 0, 0.5))
+proc_cube = bpy.context.active_object
+proc_cube.name = "ProcCube"
+mat_proc = bpy.data.materials.new("ProceduralBrick")
+if not mat_proc.node_tree:
+    mat_proc.use_nodes = True
+nt_p = mat_proc.node_tree
+bsdf_p = nt_p.nodes.get("Principled BSDF")
+noise_n = nt_p.nodes.new("ShaderNodeTexNoise")
+nt_p.links.new(noise_n.outputs["Color"], bsdf_p.inputs["Base Color"])
+bsdf_p.inputs["Metallic"].default_value = 0.95
+proc_cube.data.materials.append(mat_proc)
+
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(2, 0, 0.5))
+glass_cube = bpy.context.active_object
+glass_cube.name = "PreviewGlassCube"
+mat_g = bpy.data.materials.new("RealGlass")
+if not mat_g.node_tree:
+    mat_g.use_nodes = True
+bsdf_g = mat_g.node_tree.nodes.get("Principled BSDF")
+bsdf_g.inputs["Transmission Weight"].default_value = 0.95
+glass_cube.data.materials.append(mat_g)
+
+bpy.ops.mesh.primitive_cube_add(size=1.2, location=(0, 0, 0.5))
+col_box = bpy.context.active_object
+col_box.name = "Col_TestBox"
+col_box["varwin_collider"] = True
+col_box.hide_viewport = False
+
+# Activate 1:1 Preview
+scene.varwin_scene.preview_hide_colliders = True
+res7 = bpy.ops.varwin.toggle_render_preview()
+assert res7 == {'FINISHED'}
+
+# Check Diagnostics
+diag = varwin_preview.get_preview_diagnostics()
+assert "ProceduralBrick" in diag["unbaked_procedural"], f"Expected ProceduralBrick in diagnostics, got {diag}"
+assert "ProceduralBrick" in diag["clamped_metallic"], f"Expected ProceduralBrick in clamped_metallic, got {diag}"
+assert "RealGlass" in diag["transmission_to_alpha"], f"Expected RealGlass in transmission_to_alpha, got {diag}"
+print("  ✓ Diagnostics accurately reported unbaked procedural, clamped metallic & glass conversion")
+
+# Check procedural proxy has NO TEX_NOISE (flat color like Unity export)
+proc_proxy = proc_cube.data.materials[0]
+assert proc_proxy.get("varwin_preview_proxy") == True
+assert not any(n.type == "TEX_NOISE" for n in proc_proxy.node_tree.nodes), "Proxy should NOT include unbaked Noise node!"
+
+# Check glass proxy has Transmission=0 and BLEND
+glass_proxy = glass_cube.data.materials[0]
+glass_proxy_bsdf = next(n for n in glass_proxy.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+assert glass_proxy_bsdf.inputs["Transmission Weight"].default_value == 0.0
+assert glass_proxy.blend_method == "BLEND"
+print("  ✓ Procedural & Glass proxies match Unity export 1:1")
+
+# Check LightPath world
+world_nodes = [n.type for n in scene.world.node_tree.nodes]
+assert "LIGHT_PATH" in world_nodes, f"Expected ShaderNodeLightPath in Varwin_Preview_World, got {world_nodes}"
+print("  ✓ Varwin_Preview_World separates Skybox & Ambient via ShaderNodeLightPath")
+
+# Check collider hidden during preview
+assert col_box.hide_viewport == True, "Collider should be hidden during 1:1 preview"
+
+# Check .vwo export WHILE preview is active exports original material names!
+out_vwo_active = '/tmp/test_preview_active_export.vwo'
+if os.path.exists(out_vwo_active):
+    os.remove(out_vwo_active)
+proc_cube.varwin.direct_install_varwin = False
+proc_cube.varwin.primary_collider_type = 'BOX'
+vwo_builder.build_vwo_package(proc_cube, proc_cube.varwin, out_vwo_active)
+assert os.path.isfile(out_vwo_active)
+exported_mat_names = []
+with zipfile.ZipFile(out_vwo_active) as z:
+    env = UnityPy.load(z.read('bundle'))
+    for o in env.objects:
+        if o.type.name == 'Material':
+            exported_mat_names.append(o.read_typetree().get('m_Name', ''))
+assert 'ProceduralBrick' in exported_mat_names, f"Expected original material name in export, got {exported_mat_names}"
+assert not any('__VarwinPreview__' in n for n in exported_mat_names), f"Proxy name leaked into export: {exported_mat_names}"
+print("  ✓ Export while 1:1 preview is active cleanly resolves original materials!")
+
+# Turn preview OFF and verify collider restored
+res7_off = bpy.ops.varwin.toggle_render_preview()
+assert res7_off == {'FINISHED'}
+assert col_box.hide_viewport == False, "Collider visibility should restore when preview ends"
+print("  ✓ Collider visibility restored on preview exit")
+
+print('\n=== ALL 7 TEST SUITES PASSED WITH 100% SUCCESS! ===')

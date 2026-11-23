@@ -538,6 +538,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         if not getattr(self, "render_preview_active", False):
             return
         preset_lights = {
+            'UNITY_SKYBOX': 'studio.exr',
             'STUDIO': 'studio.exr',
             'OUTDOOR': 'forest.exr',
             'INDOOR': 'interior.exr',
@@ -554,47 +555,41 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
                             except Exception:
                                 pass
                     area.tag_redraw()
-        from .ui import update_varwin_render_rig_params
+        from .varwin_preview import update_varwin_render_rig_params
         scene = getattr(context, "scene", None) or bpy.context.scene
         update_varwin_render_rig_params(scene, self)
 
     def update_preview_render_mode(self, context):
         if not getattr(self, "render_preview_active", False):
             return
-        from .ui import update_varwin_render_preview_mode
+        from .varwin_preview import update_varwin_render_preview_mode
         update_varwin_render_preview_mode(context)
 
     def update_preview_rig_params(self, context):
         if not getattr(self, "render_preview_active", False):
             return
-        from .ui import update_varwin_render_rig_params
+        from .varwin_preview import update_varwin_render_rig_params
         scene = getattr(context, "scene", None) or bpy.context.scene
         update_varwin_render_rig_params(scene, self)
 
     def update_preview_material_mode(self, context):
         if not getattr(self, "render_preview_active", False):
             return
-        vl = getattr(context, "view_layer", None)
-        if not vl and hasattr(bpy.context, "view_layer"):
-            vl = bpy.context.view_layer
-        if vl:
-            if self.preview_material_mode == 'DEFAULT_CLAY':
-                from .ui import get_or_create_varwin_default_material
-                vl.material_override = get_or_create_varwin_default_material()
-            else:
-                vl.material_override = None
+        from .varwin_preview import apply_preview_proxies
+        scene = getattr(context, "scene", None) or bpy.context.scene
+        apply_preview_proxies(context, scene, self)
 
-    def update_preview_clamp_metallic(self, context):
+    def update_preview_materials_live(self, context):
         if not getattr(self, "render_preview_active", False):
             return
-        if self.preview_clamp_metallic:
-            from .ui import apply_varwin_standard_materials
-            apply_varwin_standard_materials(context, clamp_metallic=True, assign_missing=False)
+        from .varwin_preview import apply_preview_proxies
+        scene = getattr(context, "scene", None) or bpy.context.scene
+        apply_preview_proxies(context, scene, self)
 
     render_preview_active: bpy.props.BoolProperty(
         name="Предпросмотр рендера Varwin",
         default=False,
-        description="Режим предпросмотра модели: 100% Unity рантайм (мягкие тени, солнце, теневой пол, рассеянный свет, Unity sRGB и Varwin Standard PBR)"
+        description="Режим предпросмотра модели: 100% Unity рантайм (1:1 шейдеры, Cull Back, теневой пол EEVEE, LightPath Skybox+Ambient, Unity sRGB)"
     )
     preview_render_mode: bpy.props.EnumProperty(
         name="Режим рендера",
@@ -609,11 +604,12 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     preview_lighting_preset: bpy.props.EnumProperty(
         name="Окружение Varwin",
         items=[
-            ("STUDIO", "Студия (Varwin)", "Стандартное студийное освещение и отражения Varwin", "LIGHT_SUN", 0),
-            ("OUTDOOR", "Улица / День", "Яркое дневное уличное освещение и мягкие тени солнца", "LIGHT_HEMI", 1),
-            ("INDOOR", "Интерьер", "Мягкое освещение закрытого помещения", "LIGHT_AREA", 2),
+            ("UNITY_SKYBOX", "Unity Skybox (Стандарт Varwin)", "Классическое процедурное небо и освещение Unity / Varwin 1:1", "WORLD", 0),
+            ("STUDIO", "Студия (Varwin)", "Нейтральное студийное освещение и отражения Varwin", "LIGHT_SUN", 1),
+            ("OUTDOOR", "Улица / День", "Яркое дневное уличное освещение и мягкие тени солнца", "LIGHT_HEMI", 2),
+            ("INDOOR", "Интерьер", "Мягкое освещение закрытого помещения", "LIGHT_AREA", 3),
         ],
-        default="STUDIO",
+        default="UNITY_SKYBOX",
         update=update_preview_preset,
         description="Пресет окружения и освещения для предпросмотра рендера Varwin"
     )
@@ -621,7 +617,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         name="Теневой пол (Shadow Catcher)",
         default=True,
         update=update_preview_rig_params,
-        description="Отображать плоскость пола под объектом для реалистичных мягких теней, как в редакторе Varwin"
+        description="Отображать прозрачный теневой пол EEVEE под объектом для теней, как в редакторе Varwin"
     )
     preview_sun_intensity: bpy.props.FloatProperty(
         name="Сила солнца",
@@ -637,7 +633,7 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=1.0,
         update=update_preview_rig_params,
-        description="Мягкость размытия границ теней солнца"
+        description="Угловая мягкость размытия границ теней солнца"
     )
     preview_ambient_intensity: bpy.props.FloatProperty(
         name="Заполнение (Ambient)",
@@ -650,23 +646,48 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     preview_material_mode: bpy.props.EnumProperty(
         name="Режим материалов Varwin",
         items=[
-            ("STANDARD_PBR", "Varwin Standard (PBR)", "Все материалы отображаются в стандарте Varwin/Standard PBR (текстуры, металличность <= 0.8, плавность, альфа-блендинг)", "SHADING_TEXTURE", 0),
+            ("STANDARD_PBR", "Varwin Standard (PBR)", "Все материалы отображаются в стандарте Varwin/Standard PBR (1:1 прокси)", "SHADING_TEXTURE", 0),
             ("DEFAULT_CLAY", "Varwin Default (Constructor_Def_MAT)", "Отображение всех объектов в базовом сером материале Varwin (Constructor_Def_MAT)", "MATERIAL", 1),
         ],
         default="STANDARD_PBR",
         update=update_preview_material_mode,
         description="Режим отображения материалов в рендере Varwin"
     )
+    preview_strict_parity: bpy.props.BoolProperty(
+        name="1:1 Шейдеры Varwin (WYSIWYG)",
+        default=True,
+        update=update_preview_materials_live,
+        description="Недеструктивно подменяет материалы 1:1 прокси-шейдерами: показывает именно то, что попадет в Unity/Varwin (без незапеченных нод Blender, Normal/Roughness карт и преломления)"
+    )
+    preview_backface_culling: bpy.props.BoolProperty(
+        name="Cull Back (как в Unity)",
+        default=True,
+        update=update_preview_materials_live,
+        description="Скрывать обратную сторону полигонов (Backface Culling) как в Unity, чтобы сразу видеть вывернутые нормали"
+    )
+    preview_hide_colliders: bpy.props.BoolProperty(
+        name="Скрыть коллайдеры",
+        default=True,
+        update=update_preview_rig_params,
+        description="Временно скрывать объекты коллайдеров (Col_/Collider_) на время предпросмотра 1:1"
+    )
+    preview_use_ssao: bpy.props.BoolProperty(
+        name="Мягкий AO (Fast GI)",
+        default=False,
+        update=update_preview_rig_params,
+        description="Добавляет легкое экранное затенение углов (выключено по умолчанию для точного совпадения с Unity Forward)"
+    )
     preview_clamp_metallic: bpy.props.BoolProperty(
         name="Metallic <= 0.8",
         default=True,
-        update=update_preview_clamp_metallic,
-        description="Ограничивать металличность значением 0.80 для полного соответствия шейдеру Varwin/Standard (предотвращает черные артефакты отражений в Unity)"
+        update=update_preview_materials_live,
+        description="Ограничивать металличность значением 0.80 для полного соответствия шейдеру Varwin/Standard"
     )
     preview_auto_alpha: bpy.props.BoolProperty(
         name="Авто-прозрачность в Viewport",
         default=True,
-        description="Автоматически включать альфа-блендинг материалов в Viewport, чтобы прозрачные объекты отображались корректно"
+        update=update_preview_materials_live,
+        description="Отображать прозрачные и стеклянные материалы в режиме Alpha Blend как в Unity"
     )
 
 

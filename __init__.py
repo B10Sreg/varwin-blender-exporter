@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Varwin VWO & Scene Exporter",
     "author": "Antigravity & B10Sreg",
-    "version": (1, 9, 8),
+    "version": (1, 9, 9),
     "blender": (4, 2, 0),
     "location": "Properties > Object / Scene | 3D Viewport > Sidebar > Varwin | File > Export",
     "description": "Кроссплатформенный экспорт 3D-моделей (.vwo) и шаблонов сцен (.vwst) в Varwin XRMS со всеми возможностями Unity SDK (текстуры, материалы, Rigidbody, Colliders, VR Interaction, Spawns)",
@@ -22,6 +22,7 @@ _submodules = [
     "properties",
     "texture_baker",
     "vwo_builder",
+    "varwin_preview",
     "ui"
 ]
 

@@ -149,11 +149,23 @@ def find_image_texture_node(input_socket, visited=None):
     return None
 
 
+def resolve_original_material(mat):
+    """If `mat` is a temporary Varwin 1:1 preview proxy, returns the underlying original material."""
+    if mat and mat.get("varwin_preview_proxy"):
+        orig_name = mat.get("varwin_orig_material", "")
+        if orig_name:
+            orig_mat = bpy.data.materials.get(orig_name)
+            if orig_mat and not orig_mat.get("varwin_preview_proxy"):
+                return orig_mat
+    return mat
+
+
 def extract_material_properties(mat):
     """
     Extracts PBR properties (Base Color, Alpha, Transmission, Metallic, Roughness, Glossiness,
     Emission, blend mode, and diffuse Image Texture) from a Blender Material.
     """
+    mat = resolve_original_material(mat)
     if not mat:
         return {
             'name': 'DefaultMaterial',
@@ -354,7 +366,7 @@ def extract_object_geometry(objects, root_obj=None, apply_modifiers: bool = True
         obj_materials = []
         if obj.material_slots:
             for slot in obj.material_slots:
-                obj_materials.append(extract_material_properties(slot.material))
+                obj_materials.append(extract_material_properties(resolve_original_material(slot.material)))
         if not obj_materials:
             obj_materials.append(extract_material_properties(None))
 
@@ -1083,7 +1095,7 @@ def extract_scene_geometry(scene, selected_only: bool = False, apply_modifiers: 
         obj_materials = []
         if obj.material_slots:
             for slot in obj.material_slots:
-                obj_materials.append(extract_material_properties(slot.material))
+                obj_materials.append(extract_material_properties(resolve_original_material(slot.material)))
         if not obj_materials:
             obj_materials.append(extract_material_properties(None))
 

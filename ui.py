@@ -16,6 +16,16 @@ from .mesh_extractor import (
     is_point_inside_box,
     is_mesh_inside_box_colliders,
 )
+from .varwin_preview import (
+    get_or_create_varwin_default_material,
+    setup_varwin_render_rig,
+    cleanup_varwin_render_rig,
+    update_varwin_render_rig_params,
+    update_varwin_render_preview_mode,
+    apply_preview_proxies,
+    toggle_varwin_render_preview,
+    get_preview_diagnostics,
+)
 
 def get_target_mesh_object(context, target_name: str = None):
     """Safely retrieves a mesh object from context, name or scene fallback."""
@@ -1715,30 +1725,9 @@ class VARWIN_OT_toggle_colliders_visibility(bpy.types.Operator):
         return {'FINISHED'}
 
 
-_saved_viewport_states = {}
-
-
-def get_or_create_varwin_default_material():
-    """Returns or creates the official Varwin Constructor default material (Constructor_Def_MAT)."""
-    mat_name = "Varwin_Default_Standard_MAT"
-    mat = bpy.data.materials.get(mat_name)
-    if not mat:
-        mat = bpy.data.materials.new(mat_name)
-        if not mat.node_tree:
-            try:
-                mat.use_nodes = True
-            except Exception:
-                pass
-        bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
-        if bsdf:
-            # Varwin Constructor_Def_MAT default: light gray (0.8, 0.8, 0.8), smoothness 0.5, metallic 0.0
-            bsdf.inputs['Base Color'].default_value = (0.8, 0.8, 0.8, 1.0)
-            bsdf.inputs['Roughness'].default_value = 0.5
-            bsdf.inputs['Metallic'].default_value = 0.0
-        mat["varwin_standard_shader"] = "Varwin/Standard"
-        mat["varwin_default_constructor"] = True
-    return mat
-
+# ==============================================================================
+# VARWIN VIEWPORT RENDER PREVIEW (1:1 UNITY RUNTIME PARITY)
+# ==============================================================================
 
 def ensure_varwin_standard_material(mat, clamp_metallic=True, auto_alpha=True):
     """
@@ -1908,456 +1897,72 @@ def apply_varwin_standard_materials(context, clamp_metallic=True, assign_missing
                 vl.material_override = None
 
 
-def _build_varwin_world_nodes(world, preset, amb_str):
-    """Constructs or updates the Varwin procedural ambient sky gradient world node tree."""
-    if not world:
-        return
-    if not world.node_tree:
-        try:
-            world.use_nodes = True
-        except Exception:
-            pass
-    if not world.node_tree:
-        return
-
-    nt = world.node_tree
-    nt.nodes.clear()
-
-    tc = nt.nodes.new('ShaderNodeTexCoord')
-    sep = nt.nodes.new('ShaderNodeSeparateXYZ')
-    nt.links.new(tc.outputs['Normal'], sep.inputs['Vector'])
-
-    map_range = nt.nodes.new('ShaderNodeMapRange')
-    map_range.inputs['From Min'].default_value = -1.0
-    map_range.inputs['From Max'].default_value = 1.0
-    map_range.inputs['To Min'].default_value = 0.0
-    map_range.inputs['To Max'].default_value = 1.0
-    nt.links.new(sep.outputs['Z'], map_range.inputs['Value'])
-
-    ramp = nt.nodes.new('ShaderNodeValToRGB')
-    if preset == 'STUDIO':
-        ground_c = (0.22, 0.22, 0.24, 1.0)
-        horizon_c = (0.50, 0.51, 0.53, 1.0)
-        sky_c = (0.42, 0.48, 0.58, 1.0)
-    elif preset == 'OUTDOOR':
-        ground_c = (0.28, 0.26, 0.20, 1.0)
-        horizon_c = (0.68, 0.72, 0.76, 1.0)
-        sky_c = (0.35, 0.55, 0.85, 1.0)
-    elif preset == 'INDOOR':
-        ground_c = (0.32, 0.28, 0.25, 1.0)
-        horizon_c = (0.52, 0.50, 0.48, 1.0)
-        sky_c = (0.58, 0.54, 0.50, 1.0)
-    else:
-        ground_c = (0.22, 0.22, 0.24, 1.0)
-        horizon_c = (0.50, 0.51, 0.53, 1.0)
-        sky_c = (0.42, 0.48, 0.58, 1.0)
-
-    ramp.color_ramp.elements[0].position = 0.35
-    ramp.color_ramp.elements[0].color = ground_c
-    ramp.color_ramp.elements[1].position = 0.70
-    ramp.color_ramp.elements[1].color = sky_c
-    el_mid = ramp.color_ramp.elements.new(0.50)
-    el_mid.color = horizon_c
-    nt.links.new(map_range.outputs['Result'], ramp.inputs['Fac'])
-
-    bg = nt.nodes.new('ShaderNodeBackground')
-    bg.inputs['Strength'].default_value = amb_str
-    nt.links.new(ramp.outputs['Color'], bg.inputs['Color'])
-
-    out = nt.nodes.new('ShaderNodeOutputWorld')
-    nt.links.new(bg.outputs['Background'], out.inputs['Surface'])
-
-
-def setup_varwin_render_rig(context, scene, vws):
-    """
-    Creates and activates the Varwin Render Rig for 100% Unity parity:
-    - EEVEE Real-time Raytracing (SSR, Screen-Space Refraction) & Fast GI (SSAO Ambient Occlusion)
-    - Varwin Directional Sun Light (with soft shadows and correct angles)
-    - Varwin Ground / Shadow Catcher Plane (placed right at z_min of scene objects)
-    - Varwin Ambient Sky / World (filling shadows with ambient gradient matching Unity)
-    """
-    if not scene:
-        return None
-
-    # Configure EEVEE parameters for 100% Unity Engine parity
-    if hasattr(scene, "eevee"):
-        eevee = scene.eevee
-        if 'eevee_settings' not in _saved_viewport_states:
-            _saved_viewport_states['eevee_settings'] = {
-                'use_raytracing': getattr(eevee, 'use_raytracing', False),
-                'use_fast_gi': getattr(eevee, 'use_fast_gi', False),
-                'fast_gi_method': getattr(eevee, 'fast_gi_method', 'GLOBAL_ILLUMINATION'),
-                'fast_gi_distance': getattr(eevee, 'fast_gi_distance', 4.0),
-                'fast_gi_quality': getattr(eevee, 'fast_gi_quality', 1.0),
-                'fast_gi_bias': getattr(eevee, 'fast_gi_bias', 0.05),
-                'shadow_ray_count': getattr(eevee, 'shadow_ray_count', 1),
-                'shadow_resolution_scale': getattr(eevee, 'shadow_resolution_scale', 1.0),
-                'use_shadows': getattr(eevee, 'use_shadows', True),
-            }
-        try:
-            eevee.use_raytracing = True
-            eevee.use_fast_gi = True
-            eevee.fast_gi_method = 'GLOBAL_ILLUMINATION'
-            eevee.fast_gi_distance = 4.0
-            eevee.fast_gi_quality = 1.0
-            eevee.fast_gi_bias = 0.05
-            eevee.shadow_ray_count = 2
-            eevee.shadow_resolution_scale = 1.0
-            eevee.use_shadows = True
-        except Exception:
-            pass
-
-    col_name = "Varwin_Render_Preview_Rig"
-    col = bpy.data.collections.get(col_name)
-    if not col:
-        col = bpy.data.collections.new(col_name)
-        scene.collection.children.link(col)
-
-    # 1. Varwin Directional Sun Light
-    sun_obj = col.objects.get("Varwin_Preview_Sun")
-    if not sun_obj:
-        sun_data = bpy.data.lights.new(name="Varwin_Preview_Sun_Light", type='SUN')
-        sun_obj = bpy.data.objects.new(name="Varwin_Preview_Sun", object_data=sun_data)
-        col.objects.link(sun_obj)
-    sun_obj["varwin_preview_rig"] = True
-    sun_obj.hide_render = True
-
-    # Orientation matching Varwin Directional Light_BAKED (50° pitch, -15° yaw, -30° roll)
-    sun_obj.rotation_euler = (math.radians(50), math.radians(-15), math.radians(-30))
-    sun_energy = getattr(vws, "preview_sun_intensity", 1.5) if vws else 1.5
-    sun_obj.data.energy = sun_energy
-
-    preset = getattr(vws, "preview_lighting_preset", "STUDIO") if vws else "STUDIO"
-    if preset == 'STUDIO':
-        sun_obj.data.color = (1.0, 0.98, 0.94)
-    elif preset == 'OUTDOOR':
-        sun_obj.data.color = getattr(vws, "light_color", (1.0, 0.96, 0.88))
-    elif preset == 'INDOOR':
-        sun_obj.data.color = (1.0, 0.92, 0.82)
-
-    if hasattr(sun_obj.data, "shadow_soft_size"):
-        sun_obj.data.shadow_soft_size = getattr(vws, "preview_shadow_softness", 0.06) if vws else 0.06
-
-    # 2. Varwin Floor / Shadow Catcher Plane
-    # Calculate lowest Z boundary across visual meshes
-    z_min = 0.0
-    meshes = [o for o in scene.objects if o.type == 'MESH' and not o.name.startswith("Varwin_Preview_") and not o.get("varwin_collider", False)]
-    if meshes:
-        all_z = []
-        for o in meshes:
-            try:
-                for corner in o.bound_box:
-                    all_z.append((o.matrix_world @ mathutils.Vector(corner)).z)
-            except Exception:
-                pass
-        if all_z:
-            z_min = min(all_z)
-
-    floor_obj = col.objects.get("Varwin_Preview_Floor")
-    if not floor_obj:
-        mesh = bpy.data.meshes.new("Varwin_Preview_Floor_Mesh")
-        bm = bmesh.new()
-        bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=80.0)
-        bm.to_mesh(mesh)
-        bm.free()
-        floor_obj = bpy.data.objects.new(name="Varwin_Preview_Floor", object_data=mesh)
-        col.objects.link(floor_obj)
-
-    floor_obj["varwin_preview_rig"] = True
-    floor_obj.hide_render = True
-    floor_obj.location = (0, 0, z_min)
-    if hasattr(floor_obj, "is_shadow_catcher"):
-        floor_obj.is_shadow_catcher = True
-    show_floor = getattr(vws, "preview_show_floor", True) if vws else True
-    floor_obj.hide_viewport = not show_floor
-
-    # 3. Varwin Ambient Sky World (Gradient matching Unity Ambient Environment)
-    w_name = "Varwin_Preview_World"
-    world = bpy.data.worlds.get(w_name)
-    if not world:
-        world = bpy.data.worlds.new(w_name)
-    amb_str = getattr(vws, "preview_ambient_intensity", 0.55) if vws else 0.55
-    _build_varwin_world_nodes(world, preset, amb_str)
-    scene.world = world
-
-    return col
-
-
-def cleanup_varwin_render_rig(scene):
-    """Safely removes the Varwin preview rig (sun, shadow floor, world) from the scene."""
-    if not scene:
-        return
-
-    # Restore EEVEE settings
-    if hasattr(scene, "eevee") and 'eevee_settings' in _saved_viewport_states:
-        saved_ev = _saved_viewport_states.pop('eevee_settings', {})
-        for k, v in saved_ev.items():
-            try:
-                setattr(scene.eevee, k, v)
-            except Exception:
-                pass
-
-    col_name = "Varwin_Render_Preview_Rig"
-    col = bpy.data.collections.get(col_name)
-    if col:
-        for obj in list(col.objects):
-            try:
-                col.objects.unlink(obj)
-            except Exception:
-                pass
-            data = obj.data
-            try:
-                bpy.data.objects.remove(obj)
-            except Exception:
-                pass
-            if data:
-                if isinstance(data, bpy.types.Mesh):
-                    try:
-                        bpy.data.meshes.remove(data)
-                    except Exception:
-                        pass
-                elif isinstance(data, bpy.types.Light):
-                    try:
-                        bpy.data.lights.remove(data)
-                    except Exception:
-                        pass
-        if col.name in scene.collection.children:
-            try:
-                scene.collection.children.unlink(col)
-            except Exception:
-                pass
-        try:
-            bpy.data.collections.remove(col)
-        except Exception:
-            pass
-
-
-def update_varwin_render_rig_params(scene, vws):
-    """Updates existing live Varwin preview rig parameters in real time."""
-    if not scene or not vws or not getattr(vws, "render_preview_active", False):
-        return
-
-    col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
-    if not col:
-        return
-
-    preset = getattr(vws, "preview_lighting_preset", "STUDIO")
-
-    # Update Sun
-    sun_obj = col.objects.get("Varwin_Preview_Sun")
-    if sun_obj and sun_obj.data:
-        sun_obj.data.energy = getattr(vws, "preview_sun_intensity", 1.5)
-        if hasattr(sun_obj.data, "shadow_soft_size"):
-            sun_obj.data.shadow_soft_size = getattr(vws, "preview_shadow_softness", 0.06)
-        if preset == 'STUDIO':
-            sun_obj.data.color = (1.0, 0.98, 0.94)
-        elif preset == 'OUTDOOR':
-            sun_obj.data.color = getattr(vws, "light_color", (1.0, 0.96, 0.88))
-        elif preset == 'INDOOR':
-            sun_obj.data.color = (1.0, 0.92, 0.82)
-
-    # Update Floor
-    floor_obj = col.objects.get("Varwin_Preview_Floor")
-    if floor_obj:
-        floor_obj.hide_viewport = not getattr(vws, "preview_show_floor", True)
-
-    # Update World Gradient
-    world = bpy.data.worlds.get("Varwin_Preview_World")
-    if world:
-        amb_str = getattr(vws, "preview_ambient_intensity", 0.55)
-        _build_varwin_world_nodes(world, preset, amb_str)
-
-
-def update_varwin_render_preview_mode(context):
-    """Handles runtime toggle between 100% Unity Render (EEVEE) and Material Preview."""
-    scene = getattr(context, "scene", None) or bpy.context.scene
-    vws = getattr(scene, "varwin_scene", None)
-    if not vws or not vws.render_preview_active:
-        return
-
-    render_mode = getattr(vws, "preview_render_mode", "FULL_UNITY")
-    target_shading = 'RENDERED' if render_mode == 'FULL_UNITY' else 'MATERIAL'
-    preset_lights = {
-        'STUDIO': 'studio.exr',
-        'OUTDOOR': 'forest.exr',
-        'INDOOR': 'interior.exr',
-    }
-    target_light = preset_lights.get(vws.preview_lighting_preset, 'studio.exr')
-
-    if render_mode == 'FULL_UNITY':
-        setup_varwin_render_rig(context, scene, vws)
-    else:
-        col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
-        if col:
-            floor_obj = col.objects.get("Varwin_Preview_Floor")
-            if floor_obj:
-                floor_obj.hide_viewport = True
-
-    wm = context.window_manager
-    windows = getattr(wm, "windows", []) or [context.window]
-    for window in windows:
-        screen = getattr(window, "screen", None)
-        if not screen:
-            continue
-        for area in screen.areas:
-            if area.type == 'VIEW_3D':
-                for space in area.spaces:
-                    if space.type == 'VIEW_3D':
-                        sh = space.shading
-                        sh.type = target_shading
-                        if target_shading == 'MATERIAL':
-                            try:
-                                sh.studio_light = target_light
-                            except Exception:
-                                pass
-                            sh.use_scene_lights = False
-                            sh.use_scene_world = False
-                        else:
-                            sh.use_scene_lights = True
-                            sh.use_scene_world = True
-                area.tag_redraw()
-
-
 class VARWIN_OT_toggle_render_preview(bpy.types.Operator):
-    """Включить/выключить режим предпросмотра рендера Varwin (100% вид в Unity: солнце, мягкие тени, теневой пол, рассеянный свет)"""
+    """Включить/выключить режим предпросмотра рендера Varwin 1:1 (Unity Forward, 1:1 шейдеры, Cull Back, теневой пол EEVEE)"""
     bl_idname = "varwin.toggle_render_preview"
     bl_label = "Предпросмотр рендера Varwin"
-    bl_description = "Переключает режим отображения Viewport для точной симуляции Unity-рендера Varwin (PBR, солнце, мягкие тени, пол и прозрачность)"
+    bl_description = "Переключает недеструктивный режим отображения 1:1 (WYSIWYG): показывает именно то, как модель будет выглядеть в Varwin/Unity"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        global _saved_viewport_states
         scene = context.scene
         if not hasattr(scene, "varwin_scene"):
             self.report({'WARNING'}, "Свойства Varwin не инициализированы")
             return {'CANCELLED'}
 
         vws = scene.varwin_scene
-        new_state = not vws.render_preview_active
-        vws.render_preview_active = new_state
-
+        new_state = toggle_varwin_render_preview(context)
         render_mode = getattr(vws, "preview_render_mode", "FULL_UNITY")
-        target_shading = 'RENDERED' if render_mode == 'FULL_UNITY' else 'MATERIAL'
-
-        preset_lights = {
-            'STUDIO': 'studio.exr',
-            'OUTDOOR': 'forest.exr',
-            'INDOOR': 'interior.exr',
-        }
-        target_light = preset_lights.get(vws.preview_lighting_preset, 'studio.exr')
-
-        if new_state:
-            # 1. Save original scene globals
-            if 'engine' not in _saved_viewport_states:
-                _saved_viewport_states['engine'] = getattr(scene.render, 'engine', 'BLENDER_EEVEE')
-            if 'world' not in _saved_viewport_states:
-                _saved_viewport_states['world'] = scene.world
-            if 'view_transform' not in _saved_viewport_states:
-                _saved_viewport_states['view_transform'] = getattr(scene.view_settings, 'view_transform', 'AgX')
-
-            # 2. Switch render engine to EEVEE and color management to Standard (Unity sRGB)
-            try:
-                scene.render.engine = 'BLENDER_EEVEE'
-            except Exception:
-                pass
-            try:
-                scene.view_settings.view_transform = 'Standard'
-            except Exception:
-                pass
-
-            # 3. Setup Varwin Rig (Sun, Floor, World) if FULL_UNITY
-            if render_mode == 'FULL_UNITY':
-                setup_varwin_render_rig(context, scene, vws)
-        else:
-            # Restore scene globals
-            if 'world' in _saved_viewport_states:
-                scene.world = _saved_viewport_states.pop('world', None)
-            if 'engine' in _saved_viewport_states:
-                try:
-                    scene.render.engine = _saved_viewport_states.pop('engine', 'BLENDER_EEVEE')
-                except Exception:
-                    pass
-            if 'view_transform' in _saved_viewport_states:
-                try:
-                    scene.view_settings.view_transform = _saved_viewport_states.pop('view_transform', 'AgX')
-                except Exception:
-                    pass
-
-            # Cleanup Varwin Rig
-            cleanup_varwin_render_rig(scene)
-
-        # Apply to all 3D viewports in window manager
-        wm = context.window_manager
-        windows = getattr(wm, "windows", [])
-        if not windows and hasattr(context, "window") and context.window:
-            windows = [context.window]
-
-        for window in windows:
-            screen = getattr(window, "screen", None)
-            if not screen:
-                continue
-            for area in screen.areas:
-                if area.type == 'VIEW_3D':
-                    for space in area.spaces:
-                        if space.type == 'VIEW_3D':
-                            sh = space.shading
-                            sp_key = space.as_pointer()
-                            if new_state:
-                                # Save original shading settings
-                                if sp_key not in _saved_viewport_states:
-                                    _saved_viewport_states[sp_key] = {
-                                        'shading_type': str(sh.type),
-                                        'studio_light': str(getattr(sh, 'studio_light', 'studio.exr')),
-                                        'use_scene_lights': bool(getattr(sh, 'use_scene_lights', False)),
-                                        'use_scene_world': bool(getattr(sh, 'use_scene_world', False)),
-                                    }
-
-                                sh.type = target_shading
-                                if target_shading == 'MATERIAL':
-                                    try:
-                                        sh.studio_light = target_light
-                                    except Exception:
-                                        pass
-                                    sh.use_scene_lights = False
-                                    sh.use_scene_world = False
-                                else: # RENDERED
-                                    sh.use_scene_lights = True
-                                    sh.use_scene_world = True
-                            else:
-                                # Restore previous state
-                                saved = _saved_viewport_states.pop(sp_key, {})
-                                prev_type = saved.get('shading_type', 'SOLID')
-                                try:
-                                    sh.type = prev_type
-                                except Exception:
-                                    pass
-                                if hasattr(sh, 'studio_light') and 'studio_light' in saved:
-                                    try:
-                                        sh.studio_light = saved['studio_light']
-                                    except Exception:
-                                        pass
-                                if hasattr(sh, 'use_scene_lights') and 'use_scene_lights' in saved:
-                                    sh.use_scene_lights = bool(saved['use_scene_lights'])
-                                if hasattr(sh, 'use_scene_world') and 'use_scene_world' in saved:
-                                    sh.use_scene_world = bool(saved['use_scene_world'])
-                    area.tag_redraw()
-
-        if new_state:
-            # Enforce Varwin Standard Materials across all scene objects
-            apply_varwin_standard_materials(
-                context,
-                clamp_metallic=getattr(vws, "preview_clamp_metallic", True),
-                assign_missing=True
-            )
-        else:
-            # Clear any material override on view layer
-            vl = getattr(context, "view_layer", None)
-            if vl and vl.material_override:
-                vl.material_override = None
-
         status_text = "включен" if new_state else "выключен"
-        mode_desc = "100% Unity Рендер (Солнце + Тени + Пол)" if render_mode == 'FULL_UNITY' else "Material Preview"
+        mode_desc = "1:1 Varwin Unity Render" if render_mode == 'FULL_UNITY' else "Material Preview"
         self.report({'INFO'}, f"Предпросмотр рендера Varwin {status_text} ({mode_desc})")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_refresh_render_preview(bpy.types.Operator):
+    """Пересобрать 1:1 прокси-материалы, освещение и теневой пол после редактирования сцены"""
+    bl_idname = "varwin.refresh_render_preview"
+    bl_label = "Обновить 1:1 превью"
+    bl_description = "Пересобирает временные 1:1 шейдеры, теневой пол и свет из текущих материалов сцены"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        scene = getattr(context, "scene", None)
+        vws = getattr(scene, "varwin_scene", None)
+        return bool(vws and getattr(vws, "render_preview_active", False))
+
+    def execute(self, context):
+        scene = context.scene
+        vws = scene.varwin_scene
+        if getattr(vws, "preview_render_mode", "FULL_UNITY") == 'FULL_UNITY':
+            setup_varwin_render_rig(context, scene, vws)
+        apply_preview_proxies(context, scene, vws)
+        self.report({'INFO'}, "Предпросмотр 1:1 Varwin обновлён")
+        return {'FINISHED'}
+
+
+class VARWIN_OT_toggle_face_orientation(bpy.types.Operator):
+    """Показать/скрыть оверлей ориентации нормалей (Face Orientation) для проверки вывернутых полигонов"""
+    bl_idname = "varwin.toggle_face_orientation"
+    bl_label = "Проверить нормали"
+    bl_description = "Включает или выключает подсветку Face Orientation (красные грани будут невидимы в Unity при Cull Back)"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        toggled_to = None
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                for space in area.spaces:
+                    if space.type == 'VIEW_3D' and hasattr(space, "overlay"):
+                        ov = space.overlay
+                        if hasattr(ov, "show_face_orientation"):
+                            if toggled_to is None:
+                                toggled_to = not ov.show_face_orientation
+                            ov.show_face_orientation = toggled_to
+                area.tag_redraw()
+        if toggled_to is not None:
+            self.report({'INFO'}, f"Face Orientation: {'ВКЛ (красные грани = вывернуты)' if toggled_to else 'ВЫКЛ'}")
         return {'FINISHED'}
 
 
@@ -2421,7 +2026,7 @@ class VARWIN_OT_new_standard_material(bpy.types.Operator):
 
 
 def draw_varwin_shading_popover_content(layout, context):
-    """Draws Varwin render preview controls directly into Blender's Viewport Shading tray popover."""
+    """Draws Varwin 1:1 render preview controls directly into Blender's Viewport Shading tray popover."""
     scene = getattr(context, "scene", None)
     if not scene or not hasattr(scene, "varwin_scene"):
         return
@@ -2429,14 +2034,15 @@ def draw_varwin_shading_popover_content(layout, context):
 
     box = layout.box()
     row = box.row(align=True)
-    row.label(text="Рендер Varwin (100% Unity Parity)", icon='SHADING_RENDERED')
+    row.label(text="Рендер Varwin 1:1 (Unity Parity)", icon='SHADING_RENDERED')
 
     sub = box.row(align=True)
     sub.scale_y = 1.3
     if vws.render_preview_active:
-        sub.operator("varwin.toggle_render_preview", text="Рендер Varwin: ВКЛ", icon='CHECKBOX_HLT', depress=True)
+        sub.operator("varwin.toggle_render_preview", text="Рендер Varwin 1:1: ВКЛ", icon='CHECKBOX_HLT', depress=True)
+        sub.operator("varwin.refresh_render_preview", text="", icon='FILE_REFRESH')
     else:
-        sub.operator("varwin.toggle_render_preview", text="Предпросмотр в рендере Varwin", icon='CHECKBOX_DEHLT')
+        sub.operator("varwin.toggle_render_preview", text="Включить вид как в Varwin 1:1", icon='CHECKBOX_DEHLT')
 
     if vws.render_preview_active:
         box.separator()
@@ -2445,27 +2051,55 @@ def draw_varwin_shading_popover_content(layout, context):
 
         if getattr(vws, "preview_render_mode", "FULL_UNITY") == 'FULL_UNITY':
             box_lt = box.box()
-            row_lt = box_lt.row(align=True)
-            row_lt.label(text="Освещение и тени Varwin:", icon='LIGHT_SUN')
+            box_lt.label(text="Освещение и тени Varwin:", icon='LIGHT_SUN')
             box_lt.prop(vws, "preview_show_floor", text="Теневой пол (Shadow Catcher)")
             box_lt.prop(vws, "preview_sun_intensity", text="Сила солнца")
             box_lt.prop(vws, "preview_shadow_softness", text="Мягкость теней")
             box_lt.prop(vws, "preview_ambient_intensity", text="Заполнение (Ambient)")
+            box_lt.prop(vws, "preview_use_ssao", text="Мягкий AO (Fast GI)")
 
-        # Material section: Varwin Standard Material
+        # Compatibility 1:1 block
         box_mat = box.box()
-        row_mat = box_mat.row(align=True)
-        row_mat.label(text="Материалы: Varwin Standard", icon='MATERIAL')
-
+        box_mat.label(text="Совместимость 1:1 с Varwin:", icon='MATERIAL')
         box_mat.prop(vws, "preview_material_mode", text="Шейдер")
+        box_mat.prop(vws, "preview_strict_parity", text="1:1 Шейдеры Varwin (WYSIWYG)")
 
-        row_btns = box_mat.row(align=True)
-        row_btns.operator("varwin.convert_to_standard_material", text="Привести все к Varwin", icon='FILE_REFRESH')
-        row_btns.operator("varwin.new_standard_material", text="+ Новый", icon='ADD')
+        row_cull = box_mat.row(align=True)
+        row_cull.prop(vws, "preview_backface_culling", text="Cull Back")
+        row_cull.prop(vws, "preview_hide_colliders", text="Скрыть коллайдеры")
 
         row_opt = box_mat.row(align=True)
         row_opt.prop(vws, "preview_auto_alpha", text="Альфа (Alpha)")
         row_opt.prop(vws, "preview_clamp_metallic", text="Metallic <= 0.8")
+
+        row_btns = box_mat.row(align=True)
+        row_btns.operator("varwin.toggle_face_orientation", text="Проверить нормали", icon='NORMALS_FACE')
+        row_btns.operator("varwin.convert_to_standard_material", text="К Varwin Standard", icon='FILE_REFRESH')
+
+        # Live Diagnostics block
+        diag = get_preview_diagnostics()
+        warn_proc = len(diag.get("unbaked_procedural", []))
+        warn_norm = len(diag.get("dropped_normal", []))
+        warn_rough = len(diag.get("dropped_roughness", []))
+        warn_met = len(diag.get("clamped_metallic", []))
+        warn_trans = len(diag.get("transmission_to_alpha", []))
+        total_warns = warn_proc + warn_norm + warn_rough + warn_met + warn_trans
+
+        box_diag = box.box()
+        if total_warns == 0:
+            box_diag.label(text="Диагностика: 100% совместимо с экспортом", icon='CHECKMARK')
+        else:
+            box_diag.label(text=f"Диагностика ({total_warns} особенностей экспорта):", icon='INFO')
+            if warn_proc:
+                box_diag.label(text=f"• Процедурных без текстуры (плоский цвет): {warn_proc}")
+            if warn_norm:
+                box_diag.label(text=f"• Карты Normal не экспортируются: {warn_norm}")
+            if warn_rough:
+                box_diag.label(text=f"• Карты Roughness -> скаляр: {warn_rough}")
+            if warn_met:
+                box_diag.label(text=f"• Metallic > 0.80 ограничен до 0.8: {warn_met}")
+            if warn_trans:
+                box_diag.label(text=f"• Стекло/Transmission -> Alpha Blend: {warn_trans}")
 
         row_cm = box.row(align=True)
         row_cm.label(text="Цветопередача: Unity Standard sRGB", icon='RESTRICT_COLOR_OFF')
@@ -2476,7 +2110,7 @@ class VIEW3D_PT_shading_varwin(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'HEADER'
     bl_parent_id = 'VIEW3D_PT_shading'
-    bl_label = "Рендер Varwin (100% Unity Parity)"
+    bl_label = "Рендер Varwin 1:1 (Unity Parity)"
     bl_order = 0
 
     def draw(self, context):
@@ -2489,7 +2123,7 @@ def draw_varwin_shading_popover(self, context):
 
 
 def draw_varwin_header_shading(self, context):
-    """Draws quick Varwin render preview toggle directly into the 3D Viewport header next to shading mode buttons."""
+    """Draws quick Varwin 1:1 render preview toggle directly into the 3D Viewport header."""
     layout = self.layout
     scene = getattr(context, "scene", None)
     if not scene or not hasattr(scene, "varwin_scene"):
@@ -2498,12 +2132,13 @@ def draw_varwin_header_shading(self, context):
 
     row = layout.row(align=True)
     if vws.render_preview_active:
-        mode_label = "Varwin 100%" if getattr(vws, 'preview_render_mode', 'FULL_UNITY') == 'FULL_UNITY' else "Varwin PBR"
+        mode_label = "Varwin 1:1" if getattr(vws, 'preview_render_mode', 'FULL_UNITY') == 'FULL_UNITY' else "Varwin PBR"
         if getattr(vws, 'preview_material_mode', 'STANDARD_PBR') == 'DEFAULT_CLAY':
             mode_label += " (Def)"
         row.operator("varwin.toggle_render_preview", text=mode_label, icon='SHADING_RENDERED', depress=True)
+        row.operator("varwin.refresh_render_preview", text="", icon='FILE_REFRESH')
     else:
-        row.operator("varwin.toggle_render_preview", text="Рендер Varwin", icon='SHADING_RENDERED')
+        row.operator("varwin.toggle_render_preview", text="Вид Varwin 1:1", icon='SHADING_RENDERED')
 
 
 def cleanup_shading_callbacks():
@@ -2548,6 +2183,8 @@ classes = (
     VARWIN_OT_detect_and_disable_internal_meshes,
     VARWIN_OT_enable_all_auto_collisions,
     VARWIN_OT_toggle_render_preview,
+    VARWIN_OT_refresh_render_preview,
+    VARWIN_OT_toggle_face_orientation,
     VARWIN_OT_convert_to_standard_material,
     VARWIN_OT_new_standard_material,
     OBJECT_PT_varwin_object,
@@ -2563,8 +2200,6 @@ def register():
     cleanup_header_callbacks()
     bpy.types.PROPERTIES_HT_header.append(properties_header_draw)
     cleanup_shading_callbacks()
-    if hasattr(bpy.types, "VIEW3D_PT_shading"):
-        bpy.types.VIEW3D_PT_shading.prepend(draw_varwin_shading_popover)
     if hasattr(bpy.types, "VIEW3D_HT_header"):
         bpy.types.VIEW3D_HT_header.append(draw_varwin_header_shading)
 
