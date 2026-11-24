@@ -743,29 +743,33 @@ def _apply_eevee_unity_settings(scene, vws):
             "use_fast_gi": getattr(eevee, "use_fast_gi", False),
             "fast_gi_method": getattr(eevee, "fast_gi_method", "GLOBAL_ILLUMINATION"),
             "fast_gi_distance": getattr(eevee, "fast_gi_distance", 4.0),
-            "fast_gi_quality": getattr(eevee, "fast_gi_quality", 1.0),
+            "fast_gi_quality": getattr(eevee, "fast_gi_quality", 0.25),
             "fast_gi_bias": getattr(eevee, "fast_gi_bias", 0.05),
             "indirect_light_intensity": getattr(eevee, "indirect_light_intensity", 1.0),
             "shadow_ray_count": getattr(eevee, "shadow_ray_count", 1),
             "shadow_resolution_scale": getattr(eevee, "shadow_resolution_scale", 1.0),
             "use_shadows": getattr(eevee, "use_shadows", True),
+            "taa_samples": getattr(eevee, "taa_samples", 16),
         }
 
-    use_ssao = bool(getattr(vws, "preview_use_ssao", False)) if vws else False
+    use_ssao = bool(getattr(vws, "preview_use_ssao", True)) if vws else True
+    use_ssr = bool(getattr(vws, "preview_use_ssr", False)) if vws else False
     shadow_mode = getattr(vws, "light_shadows", "SOFT") if vws else "SOFT"
     try:
-        eevee.use_raytracing = False
+        eevee.use_raytracing = use_ssr
         eevee.use_fast_gi = use_ssao
         if use_ssao:
-            eevee.fast_gi_method = "AMBIENT_OCCLUSION_ONLY" if hasattr(eevee, "fast_gi_method") else "GLOBAL_ILLUMINATION"
-            eevee.fast_gi_distance = 1.5
-            eevee.fast_gi_quality = 1.0
+            eevee.fast_gi_method = "AMBIENT_OCCLUSION_ONLY" if not use_ssr else "GLOBAL_ILLUMINATION"
+            eevee.fast_gi_distance = 2.0
+            eevee.fast_gi_quality = 0.25
             eevee.fast_gi_bias = 0.05
         if hasattr(eevee, "indirect_light_intensity"):
             eevee.indirect_light_intensity = 0.6
-        eevee.shadow_ray_count = 2
+        eevee.shadow_ray_count = 1
         eevee.shadow_resolution_scale = 1.0
         eevee.use_shadows = shadow_mode != "NONE"
+        if hasattr(eevee, "taa_samples"):
+            eevee.taa_samples = 8
     except Exception:
         pass
 
@@ -825,32 +829,41 @@ def setup_varwin_render_rig(context, scene, vws):
     sun_obj.rotation_euler = (math.radians(50), math.radians(-15), math.radians(-30))
     _apply_sun_params(sun_obj, vws)
 
-    # 2. Varwin Transparent Shadow Catcher Floor
+    # 2. Varwin Transparent Shadow Catcher Floor (Tightly bounded for max FPS)
     z_min = 0.0
+    max_dim = 4.0
     meshes = [
         o for o in scene.objects
         if o.type == "MESH" and not is_preview_rig_object(o) and not is_collider_object(o)
     ]
     if meshes:
-        all_z = []
+        all_coords = []
         for o in meshes:
             try:
                 for corner in o.bound_box:
-                    all_z.append((o.matrix_world @ mathutils.Vector(corner)).z)
+                    all_coords.append(o.matrix_world @ mathutils.Vector(corner))
             except Exception:
                 pass
-        if all_z:
-            z_min = min(all_z)
+        if all_coords:
+            z_min = min(p.z for p in all_coords)
+            x_span = max(p.x for p in all_coords) - min(p.x for p in all_coords)
+            y_span = max(p.y for p in all_coords) - min(p.y for p in all_coords)
+            max_dim = max(x_span, y_span, 2.0)
+
+    floor_size = max(max_dim * 3.5, 12.0)
 
     floor_obj = col.objects.get("Varwin_Preview_Floor")
     if not floor_obj:
         mesh = bpy.data.meshes.new("Varwin_Preview_Floor_Mesh")
         bm = bmesh.new()
-        bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=80.0)
+        bmesh.ops.create_grid(bm, x_segments=1, y_segments=1, size=floor_size)
         bm.to_mesh(mesh)
         bm.free()
         floor_obj = bpy.data.objects.new(name="Varwin_Preview_Floor", object_data=mesh)
         col.objects.link(floor_obj)
+    else:
+        scale_fac = floor_size / 12.0
+        floor_obj.scale = (scale_fac, scale_fac, 1.0)
 
     floor_obj["varwin_preview_rig"] = True
     floor_obj.hide_render = True
@@ -867,7 +880,11 @@ def setup_varwin_render_rig(context, scene, vws):
     floor_obj.data.materials.append(floor_mat)
 
     show_floor = bool(getattr(vws, "preview_show_floor", True)) if vws else True
-    floor_obj.hide_viewport = not show_floor
+    render_mode = getattr(vws, "preview_render_mode", "FAST_UNITY") if vws else "FAST_UNITY"
+    if render_mode == "FULL_UNITY":
+        floor_obj.hide_viewport = not show_floor
+    else:
+        floor_obj.hide_viewport = True
 
     # 3. LightPath World (Skybox + Flat Unity Ambient)
     w_name = "Varwin_Preview_World"
@@ -962,7 +979,11 @@ def update_varwin_render_rig_params(scene, vws):
 
     floor_obj = col.objects.get("Varwin_Preview_Floor")
     if floor_obj:
-        floor_obj.hide_viewport = not getattr(vws, "preview_show_floor", True)
+        render_mode = getattr(vws, "preview_render_mode", "FAST_UNITY")
+        if render_mode == "FULL_UNITY":
+            floor_obj.hide_viewport = not getattr(vws, "preview_show_floor", True)
+        else:
+            floor_obj.hide_viewport = True
         shadow_str = float(getattr(vws, "shadow_strength", 0.45))
         _get_or_create_eevee_shadow_floor_mat(shadow_str)
 
@@ -973,13 +994,13 @@ def update_varwin_render_rig_params(scene, vws):
 
 
 def update_varwin_render_preview_mode(context):
-    """Handles runtime toggle between 100% Unity Render (EEVEE) and Material Preview."""
+    """Handles runtime toggle between FAST_UNITY (60+ FPS), FULL_UNITY, and MATERIAL_STUDIO."""
     scene = getattr(context, "scene", None) or bpy.context.scene
     vws = getattr(scene, "varwin_scene", None)
     if not vws or not vws.render_preview_active:
         return
 
-    render_mode = getattr(vws, "preview_render_mode", "FULL_UNITY")
+    render_mode = getattr(vws, "preview_render_mode", "FAST_UNITY")
     target_shading = "RENDERED" if render_mode == "FULL_UNITY" else "MATERIAL"
     preset_lights = {
         "UNITY_SKYBOX": "studio.exr",
@@ -989,8 +1010,16 @@ def update_varwin_render_preview_mode(context):
     }
     target_light = preset_lights.get(vws.preview_lighting_preset, "studio.exr")
 
-    if render_mode == "FULL_UNITY":
+    if render_mode in ("FULL_UNITY", "FAST_UNITY"):
         setup_varwin_render_rig(context, scene, vws)
+        col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
+        if col:
+            floor_obj = col.objects.get("Varwin_Preview_Floor")
+            if floor_obj:
+                if render_mode == "FULL_UNITY":
+                    floor_obj.hide_viewport = not getattr(vws, "preview_show_floor", True)
+                else:
+                    floor_obj.hide_viewport = True
     else:
         col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
         if col:
@@ -1010,7 +1039,7 @@ def update_varwin_render_preview_mode(context):
                     if space.type == "VIEW_3D":
                         sh = space.shading
                         sh.type = target_shading
-                        if target_shading == "MATERIAL":
+                        if render_mode == "MATERIAL_STUDIO":
                             try:
                                 sh.studio_light = target_light
                             except Exception:
@@ -1030,7 +1059,7 @@ def toggle_varwin_render_preview(context):
     new_state = not vws.render_preview_active
     vws.render_preview_active = new_state
 
-    render_mode = getattr(vws, "preview_render_mode", "FULL_UNITY")
+    render_mode = getattr(vws, "preview_render_mode", "FAST_UNITY")
     target_shading = "RENDERED" if render_mode == "FULL_UNITY" else "MATERIAL"
 
     preset_lights = {
@@ -1073,8 +1102,14 @@ def toggle_varwin_render_preview(context):
         except Exception:
             pass
 
-        if render_mode == "FULL_UNITY":
+        if render_mode in ("FULL_UNITY", "FAST_UNITY"):
             setup_varwin_render_rig(context, scene, vws)
+            if render_mode == "FAST_UNITY":
+                col = bpy.data.collections.get("Varwin_Render_Preview_Rig")
+                if col:
+                    floor_obj = col.objects.get("Varwin_Preview_Floor")
+                    if floor_obj:
+                        floor_obj.hide_viewport = True
         else:
             _sync_colliders_visibility(scene, bool(getattr(vws, "preview_hide_colliders", True)))
 
@@ -1136,7 +1171,7 @@ def toggle_varwin_render_preview(context):
                                     "use_scene_world": bool(getattr(sh, "use_scene_world", False)),
                                 }
                             sh.type = target_shading
-                            if target_shading == "MATERIAL":
+                            if render_mode == "MATERIAL_STUDIO":
                                 try:
                                     sh.studio_light = target_light
                                 except Exception:

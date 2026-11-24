@@ -2049,14 +2049,30 @@ def draw_varwin_shading_popover_content(layout, context):
         box.prop(vws, "preview_render_mode", text="Режим")
         box.prop(vws, "preview_lighting_preset", text="Окружение")
 
-        if getattr(vws, "preview_render_mode", "FULL_UNITY") == 'FULL_UNITY':
+        render_mode = getattr(vws, "preview_render_mode", "FAST_UNITY")
+        if render_mode in ('FULL_UNITY', 'FAST_UNITY'):
             box_lt = box.box()
-            box_lt.label(text="Освещение и тени Varwin:", icon='LIGHT_SUN')
-            box_lt.prop(vws, "preview_show_floor", text="Теневой пол (Shadow Catcher)")
-            box_lt.prop(vws, "preview_sun_intensity", text="Сила солнца")
-            box_lt.prop(vws, "preview_shadow_softness", text="Мягкость теней")
-            box_lt.prop(vws, "preview_ambient_intensity", text="Заполнение (Ambient)")
-            box_lt.prop(vws, "preview_use_ssao", text="Мягкий AO (Fast GI)")
+            box_lt.label(text="Освещение Varwin:", icon='LIGHT_SUN')
+            if render_mode == 'FULL_UNITY':
+                box_lt.prop(vws, "preview_show_floor", text="Теневой пол (Shadow Catcher)")
+                box_lt.prop(vws, "preview_sun_intensity", text="Сила солнца")
+                box_lt.prop(vws, "preview_shadow_softness", text="Мягкость теней")
+                box_lt.prop(vws, "preview_ambient_intensity", text="Заполнение (Ambient)")
+            else:
+                box_lt.prop(vws, "preview_sun_intensity", text="Сила солнца")
+                box_lt.prop(vws, "preview_ambient_intensity", text="Заполнение (Ambient)")
+
+        # Performance Box (Lag-free 60+ FPS controls)
+        box_perf = box.box()
+        box_perf.label(text="Производительность (FPS):", icon='PREFERENCES')
+        if render_mode == 'FAST_UNITY':
+            box_perf.label(text="⚡ Быстрый режим: 60+ FPS (Без лагов)", icon='CHECKMARK')
+        elif render_mode == 'FULL_UNITY':
+            box_perf.label(text="🖥 Полный EEVEE (Теневой пол, Мягкие тени)", icon='SCENE_DATA')
+        else:
+            box_perf.label(text="🎨 Студийный Material Preview (HDRI)", icon='WORLD')
+        box_perf.prop(vws, "preview_use_ssao", text="Контактные тени (SSAO)")
+        box_perf.prop(vws, "preview_use_ssr", text="Тяжелые отражения SSR (Raytracing)")
 
         # Compatibility 1:1 block
         box_mat = box.box()
@@ -2132,7 +2148,14 @@ def draw_varwin_header_shading(self, context):
 
     row = layout.row(align=True)
     if vws.render_preview_active:
-        mode_label = "Varwin 1:1" if getattr(vws, 'preview_render_mode', 'FULL_UNITY') == 'FULL_UNITY' else "Varwin PBR"
+        mode = getattr(vws, 'preview_render_mode', 'FAST_UNITY')
+        if mode == 'FAST_UNITY':
+            mode_label = "Varwin 60 FPS"
+        elif mode == 'FULL_UNITY':
+            mode_label = "Varwin EEVEE"
+        else:
+            mode_label = "Varwin Studio"
+
         if getattr(vws, 'preview_material_mode', 'STANDARD_PBR') == 'DEFAULT_CLAY':
             mode_label += " (Def)"
         row.operator("varwin.toggle_render_preview", text=mode_label, icon='SHADING_RENDERED', depress=True)

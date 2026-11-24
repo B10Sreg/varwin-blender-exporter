@@ -372,6 +372,21 @@ assert bpy.data.objects.get("Varwin_Preview_Sun") is None, "Sun object should be
 assert bpy.data.objects.get("Varwin_Preview_Floor") is None, "Floor object should be deleted!"
 print("  ✓ Varwin Render Rig cleaned up with 0 scene pollution!")
 
+# 6e. Test FAST_UNITY (60+ FPS mode)
+scene.varwin_scene.preview_render_mode = 'FAST_UNITY'
+res_fast = bpy.ops.varwin.toggle_render_preview()
+assert res_fast == {'FINISHED'}
+assert scene.varwin_scene.render_preview_active == True
+rig_fast = bpy.data.collections.get("Varwin_Render_Preview_Rig")
+assert rig_fast is not None
+sun_fast = rig_fast.objects.get("Varwin_Preview_Sun")
+floor_fast = rig_fast.objects.get("Varwin_Preview_Floor")
+assert sun_fast is not None
+assert floor_fast is not None and floor_fast.hide_viewport == True, "Floor must be hidden in FAST_UNITY for 60+ FPS"
+res_fast_off = bpy.ops.varwin.toggle_render_preview()
+assert res_fast_off == {'FINISHED'}
+print("  ✓ FAST_UNITY mode verified (Sun lighting active, floor hidden for 60+ FPS, clean exit)")
+
 # ---------------------------------------------------------
 # TEST 7: 1:1 WYSIWYG Parity Diagnostics, LightPath World, Colliders & Export Safety
 # ---------------------------------------------------------

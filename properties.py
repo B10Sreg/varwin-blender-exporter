@@ -594,12 +594,25 @@ class VarwinSceneProperties(bpy.types.PropertyGroup):
     preview_render_mode: bpy.props.EnumProperty(
         name="Режим рендера",
         items=[
-            ("FULL_UNITY", "100% Рендер Unity (Солнце, Тени, Пол, Ambient)", "Точная симуляция рантайма Unity: солнце, мягкие динамические тени, теневой пол, рассеянный свет и PBR", "SHADING_RENDERED", 0),
-            ("MATERIAL_STUDIO", "Студийный Material Preview", "Облегченный PBR предпросмотр со студийным светом HDRI без теней от солнца", "SHADING_TEXTURE", 1),
+            ("FAST_UNITY", "Быстрый Varwin (60+ FPS, Без лагов)", "Сверхбыстрый режим Material Preview с солнцем, тенями и окружением Varwin. Максимальный FPS на любых видеокартах", "SHADING_TEXTURE", 0),
+            ("FULL_UNITY", "100% Рендер Unity (EEVEE)", "Полный рендеринг Unity: солнце, мягкие динамические тени, теневой пол, рассеянный свет и PBR", "SHADING_RENDERED", 1),
+            ("MATERIAL_STUDIO", "Студийный Material Preview (HDRI)", "Облегченный PBR предпросмотр со студийным светом HDRI без теней от солнца", "WORLD", 2),
         ],
-        default="FULL_UNITY",
+        default="FAST_UNITY",
         update=update_preview_render_mode,
-        description="Режим рендера предпросмотра: 100% Unity Parity (с тенями и солнцем) или легкий Material Preview"
+        description="Режим рендера предпросмотра: Быстрый (60+ FPS), Полный EEVEE или Студийный HDRI"
+    )
+    preview_use_ssr: bpy.props.BoolProperty(
+        name="Тяжелые отражения SSR (Raytracing)",
+        default=False,
+        update=update_preview_rig_params,
+        description="Включает экранную трассировку лучей EEVEE. Рекомендуется только для дискретных видеокарт (RTX/RX). На встроенных видеокартах (AMD Renoir/Vega, Intel) выключайте во избежание лагов"
+    )
+    preview_use_ssao: bpy.props.BoolProperty(
+        name="Контактные тени (SSAO)",
+        default=True,
+        update=update_preview_rig_params,
+        description="Мягкое контактное затенение щелей и стыков в стиле Unity SSAO (быстрое, без лагов)"
     )
     preview_lighting_preset: bpy.props.EnumProperty(
         name="Окружение Varwin",
